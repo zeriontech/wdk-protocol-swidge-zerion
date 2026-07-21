@@ -10,9 +10,12 @@ const USER_ADDRESS = '0xa460AEbce0d3A4BecAd8ccf9D6D4861296c503Bd'
 
 const TOKEN_IN = '0x9e6b38E072f624fdC4Fbaf7bB12a7D9e657435ce'
 const TOKEN_OUT = '0x73091d62F1F11DCb172530126E9630e327770e05'
+const BRIDGE_TOKEN_SOURCE = '0x' + '11'.repeat(20)
+const BRIDGE_TOKEN_DESTINATION = '0x' + '22'.repeat(20)
 const ROUTER = '0xf90e98F3D8Dce44632E5020ABF2E122E0f99DFAb'
 
 const SWAP_HASH = '0x' + 'ab'.repeat(32)
+const APPROVE_DATA = `0x095ea7b3${ROUTER.slice(2).toLowerCase().padStart(64, '0')}${(10n ** 18n).toString(16).padStart(64, '0')}`
 
 const getNetworkMock = jest.fn()
 const getTransactionReceiptMock = jest.fn()
@@ -64,14 +67,29 @@ const TOKEN_OUT_FUNGIBLE = {
   }
 }
 
+const BRIDGE_TOKEN_FUNGIBLE = {
+  type: 'fungibles',
+  id: 'asset-uuid',
+  attributes: {
+    symbol: 'BRG',
+    name: 'Bridge Token',
+    implementations: [
+      { chain_id: 'ethereum', address: BRIDGE_TOKEN_SOURCE, decimals: 18 },
+      { chain_id: 'base', address: BRIDGE_TOKEN_DESTINATION, decimals: 18 }
+    ]
+  }
+}
+
 const BY_IMPLEMENTATION = {
   ethereum: ETH_FUNGIBLE,
   [`ethereum:${TOKEN_IN.toLowerCase()}`]: TOKEN_IN_FUNGIBLE,
-  [`ethereum:${TOKEN_OUT.toLowerCase()}`]: TOKEN_OUT_FUNGIBLE
+  [`ethereum:${TOKEN_OUT.toLowerCase()}`]: TOKEN_OUT_FUNGIBLE,
+  [`ethereum:${BRIDGE_TOKEN_SOURCE}`]: BRIDGE_TOKEN_FUNGIBLE
 }
 
 const FUNGIBLES_BY_ID = {
   eth: ETH_FUNGIBLE,
+  'asset-uuid': BRIDGE_TOKEN_FUNGIBLE,
   'token-out-id': TOKEN_OUT_FUNGIBLE,
   [TOKEN_OUT.toLowerCase()]: TOKEN_OUT_FUNGIBLE
 }
@@ -125,7 +143,7 @@ function makeQuote ({ approve = false, bridgeFee = false, error = null, executab
                 chain_id: '0x1',
                 gas: '210000',
                 value: '1000',
-                data: '0xswapdata'
+                data: '0x1234'
               }
             }
           }
@@ -141,7 +159,7 @@ function makeQuote ({ approve = false, bridgeFee = false, error = null, executab
                 chain_id: '0x1',
                 gas: '60000',
                 value: '0',
-                data: '0xapprovedata'
+                data: APPROVE_DATA
               }
             }
           }
@@ -222,6 +240,7 @@ describe('ZerionProtocol', () => {
       account._provider = { getNetwork: getNetworkMock }
       account.getAddress = jest.fn().mockResolvedValue(USER_ADDRESS)
       account.getTransactionReceipt = getTransactionReceiptMock
+      account.quoteSendTransaction = jest.fn().mockResolvedValue({ fee: 10n ** 15n })
       account.sendTransaction = jest.fn().mockResolvedValue({ hash: SWAP_HASH, fee: 12_345n })
 
       protocol = createProtocol(account)
@@ -255,6 +274,64 @@ describe('ZerionProtocol', () => {
         expect(request.searchParams.get('output[chain_id]')).toBe('ethereum')
         expect(request.searchParams.get('output[fungible_id]')).toBe('token-out-id')
         expect(request.searchParams.get('slippage_percent')).toBeNull()
+        expect(account.quoteSendTransaction).toHaveBeenCalledWith({
+          to: ROUTER,
+          value: 1_000n,
+          data: '0x1234'
+        }, undefined)
+      })
+
+      test.each(['output_amount', 'minimum_output_amount'])('should reject executable quotes missing %s', async (field) => {
+        const quote = makeQuote()
+        delete quote.attributes[field]
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toThrow(ZerionQuoteError)
+      })
+
+      test('should reject invalid executable output amounts', async () => {
+        const quote = makeQuote()
+        quote.attributes.minimum_output_amount.quantity = 'not-a-number'
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toThrow('invalid output amount')
+      })
+
+      test.each([429, 503])('should propagate fee-token lookup failures with status %s', async (status) => {
+        const quote = makeQuote()
+        quote.attributes.network_fee.fungible.id = 'fee-token'
+        quotesResponse = { data: [quote] }
+
+        jest.spyOn(protocol._client, 'getFungible').mockRejectedValue(new ZerionApiError('api_error', 'Try again', status))
+
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toMatchObject({ status })
+      })
+
+      test.each([
+        ['from', ROUTER, 'different sender'],
+        ['chain_id', '0x2105', 'different chain'],
+        ['to', 'invalid-target', 'invalid swap transaction target']
+      ])('should reject an executable transaction with invalid %s', async (field, value, message) => {
+        const quote = makeQuote()
+        quote.attributes.transaction_swap.evm[field] = value
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toThrow(message)
+      })
+
+      test('should reject a reported fee after deterministic lookup misses', async () => {
+        const quote = makeQuote()
+        quote.attributes.network_fee.fungible.id = 'fee-token'
+        quotesResponse = { data: [quote] }
+
+        jest.spyOn(protocol._client, 'getFungible').mockRejectedValue(new ZerionApiError('not_found', 'Missing', 404))
+
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toThrow('fee token')
       })
 
       test('should send the api key as basic auth', async () => {
@@ -289,6 +366,11 @@ describe('ZerionProtocol', () => {
       test('should throw on exact-out operations', async () => {
         await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, toTokenAmount: 1_000_000n }))
           .rejects.toThrow(ZerionCapabilityError)
+      })
+
+      test.each([Number.MAX_SAFE_INTEGER + 1, 1.5])('should reject unsafe numeric input amounts (%s)', async (amount) => {
+        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: amount }))
+          .rejects.toThrow('safe integer')
       })
 
       test('should throw when the api rejects the request', async () => {
@@ -341,7 +423,7 @@ describe('ZerionProtocol', () => {
         expect(account.sendTransaction).toHaveBeenCalledWith({
           to: ROUTER,
           value: 1_000n,
-          data: '0xswapdata'
+          data: '0x1234'
         })
 
         expect(result).toEqual({
@@ -363,7 +445,7 @@ describe('ZerionProtocol', () => {
 
         expect(error).toBeInstanceOf(ZerionAllowanceError)
         expect(error.details.token).toBe(TOKEN_IN.toLowerCase())
-        expect(error.details.transaction).toEqual({ to: TOKEN_IN.toLowerCase(), value: 0n, data: '0xapprovedata' })
+        expect(error.details.transaction).toEqual({ to: TOKEN_IN.toLowerCase(), value: 0n, data: APPROVE_DATA })
         expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
@@ -400,6 +482,56 @@ describe('ZerionProtocol', () => {
 
         await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
           .rejects.toThrow('maxNetworkFeeBps')
+      })
+
+      test('should fail closed when a network fee cap cannot be verified', async () => {
+        const quote = makeQuote()
+        delete quote.attributes.network_fee.amount.usd_value
+        quotesResponse = { data: [quote] }
+        const protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
+      })
+
+      test('should fail closed when the capped quote has no input USD value', async () => {
+        const quote = makeQuote()
+        delete quote.attributes.input_amount.usd_value
+        quotesResponse = { data: [quote] }
+        const protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
+      })
+
+      test('should fail closed when a protocol fee cap cannot be verified', async () => {
+        const quote = makeQuote()
+        delete quote.attributes.protocol_fee.amount.usd_value
+        quotesResponse = { data: [quote] }
+        const protocol = createProtocol(account, { maxProtocolFeeBps: 1 })
+
+        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
+      })
+
+      test.each([
+        ['maxNetworkFeeBps', NaN],
+        ['maxNetworkFeeBps', -1],
+        ['maxProtocolFeeBps', Number.POSITIVE_INFINITY]
+      ])('should reject invalid %s values', async (name, value) => {
+        const protocol = createProtocol(account, { [name]: value })
+
+        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toMatchObject({ code: 'invalid_config' })
+      })
+
+      test('should reject an approval that authorizes an unexpected spender', async () => {
+        const quote = makeQuote({ approve: true })
+        quote.attributes.transaction_approve.evm.data = `0x095ea7b3${USER_ADDRESS.slice(2).toLowerCase().padStart(64, '0')}${(10n ** 18n).toString(16).padStart(64, '0')}`
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
+          .rejects.toThrow('unexpected spender')
       })
 
       test('should throw if the account is read-only', async () => {
@@ -515,7 +647,7 @@ describe('ZerionProtocol', () => {
         expect(result.tokenInAmount).toBe(10n ** 18n)
         expect(result.tokenOutAmount).toBe(2_500_000_000n)
         expect(result.hash).toBe(SWAP_HASH)
-        expect(result.fee).toBe(10n ** 15n)
+        expect(result.fee).toBe(12_345n)
         expect(account.sendTransaction).toHaveBeenCalled()
       })
 
@@ -558,6 +690,20 @@ describe('ZerionProtocol', () => {
         expect(result.fee).toBe(10n ** 15n)
         expect(result.bridgeFee).toBe(2n * 10n ** 15n)
       })
+
+      test('should bridge by canonical fungible id when chain addresses differ', async () => {
+        quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
+
+        await protocol.quoteBridge({
+          token: BRIDGE_TOKEN_SOURCE,
+          targetChain: 'base',
+          recipient: USER_ADDRESS,
+          amount: 10n ** 18n
+        })
+
+        expect(quotesRequests[0].searchParams.get('input[fungible_id]')).toBe('asset-uuid')
+        expect(quotesRequests[0].searchParams.get('output[fungible_id]')).toBe('asset-uuid')
+      })
     })
   })
 
@@ -571,6 +717,7 @@ describe('ZerionProtocol', () => {
 
       account.getAddress = jest.fn().mockResolvedValue(USER_ADDRESS)
       account.getTransactionReceipt = getTransactionReceiptMock
+      account.quoteSendTransaction = jest.fn().mockResolvedValue({ fee: 10n ** 15n })
       account.sendTransaction = jest.fn().mockResolvedValue({ hash: SWAP_HASH, fee: 12_345n })
 
       protocol = createProtocol(account)
@@ -586,8 +733,8 @@ describe('ZerionProtocol', () => {
       }, { paymasterToken: 'USDT' })
 
       expect(account.sendTransaction).toHaveBeenCalledWith([
-        { to: TOKEN_IN.toLowerCase(), value: 0n, data: '0xapprovedata' },
-        { to: ROUTER, value: 1_000n, data: '0xswapdata' }
+        { to: TOKEN_IN.toLowerCase(), value: 0n, data: APPROVE_DATA },
+        { to: ROUTER, value: 1_000n, data: '0x1234' }
       ], { paymasterToken: 'USDT' })
 
       expect(result.hash).toBe(SWAP_HASH)
@@ -597,7 +744,7 @@ describe('ZerionProtocol', () => {
       await protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n })
 
       expect(account.sendTransaction).toHaveBeenCalledWith([
-        { to: ROUTER, value: 1_000n, data: '0xswapdata' }
+        { to: ROUTER, value: 1_000n, data: '0x1234' }
       ], {})
     })
 

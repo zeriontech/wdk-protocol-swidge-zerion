@@ -51,6 +51,14 @@ export function toBaseUnits (quantity, decimals) {
  * @returns {string} Human-readable amount as a decimal string.
  */
 export function fromBaseUnits (amount, decimals) {
+  if (typeof amount === 'number' && !Number.isSafeInteger(amount)) {
+    throw new ZerionError('invalid_amount', 'Numeric amounts must be safe integers; use bigint for larger values.')
+  }
+
+  if (typeof amount !== 'number' && typeof amount !== 'bigint') {
+    throw new ZerionError('invalid_amount', 'Amounts must be provided as a safe integer or bigint.')
+  }
+
   const value = BigInt(amount)
 
   if (value < 0n) {

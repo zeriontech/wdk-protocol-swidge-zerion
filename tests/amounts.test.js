@@ -42,5 +42,10 @@ describe('amounts', () => {
     test('should throw on negative amounts', () => {
       expect(() => fromBaseUnits(-1n, 18)).toThrow('Amounts must be positive')
     })
+
+    test('should reject unsafe or fractional numeric amounts', () => {
+      expect(() => fromBaseUnits(Number.MAX_SAFE_INTEGER + 1, 18)).toThrow('safe integers')
+      expect(() => fromBaseUnits(1.5, 18)).toThrow('safe integers')
+    })
   })
 })

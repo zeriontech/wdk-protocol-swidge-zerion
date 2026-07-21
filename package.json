@@ -65,7 +65,6 @@
     "index.js",
     "bare.js",
     "src/",
-    "scripts/",
     "types/",
     "CHANGELOG.md",
     "LICENSE",

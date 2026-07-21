@@ -47,6 +47,7 @@ import { ZerionError, ZerionQuoteError, ZerionCapabilityError, ZerionAllowanceEr
  * @property {string} [currency] - Currency for fiat values in quotes. Defaults to 'usd'.
  * @property {number} [timeoutMs] - Per-request timeout in milliseconds.
  * @property {number} [maxRetries] - Maximum number of retries for retryable API failures.
+ * @property {number} [retryDelayMs] - Base delay between retries in milliseconds.
  * @property {typeof fetch} [fetch] - Custom fetch implementation.
  * @property {ZerionApiClient} [client] - Custom pre-configured Zerion API client.
  */
@@ -92,7 +93,9 @@ const NATIVE_TOKEN_SENTINELS = new Set([
 ])
 
 const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/
+const EVM_DATA_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/
 const TRANSACTION_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/
+const ERC20_APPROVE_SELECTOR = '095ea7b3'
 
 // Display-only metadata for getSupportedChains; not used in swap execution.
 const NATIVE_TOKEN_SYMBOLS = Object.freeze({
@@ -122,6 +125,32 @@ function toEvmTransaction (evm) {
     value: BigInt(evm.value ?? 0),
     data: evm.data
   }
+}
+
+function toBaseUnitAmount (value, optionName) {
+  if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
+    throw new ZerionError('invalid_options', `The '${optionName}' option must be a non-negative safe integer or bigint.`)
+  }
+
+  if (typeof value !== 'number' && typeof value !== 'bigint') {
+    throw new ZerionError('invalid_options', `The '${optionName}' option must be a non-negative safe integer or bigint.`)
+  }
+
+  return BigInt(value)
+}
+
+function normalizeFeeCap (value, name) {
+  const valid = typeof value === 'bigint'
+    ? value >= 0n
+    : typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+  if (!valid) {
+    throw new ZerionError('invalid_config', `'${name}' must be a finite, non-negative number or bigint.`)
+  }
+
+  return typeof value === 'bigint' && value > BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number.POSITIVE_INFINITY
+    : Number(value)
 }
 
 export default class ZerionProtocol extends SwidgeProtocol {
@@ -185,7 +214,11 @@ export default class ZerionProtocol extends SwidgeProtocol {
 
     const quote = this._selectQuote(response?.data ?? [])
 
-    return await this._mapQuote(quote, context)
+    const prepared = await this._prepareQuote(quote, context)
+
+    this._enforceFeeCaps(quote.attributes, this._config, prepared.networkFee)
+
+    return prepared.mapped
   }
 
   /**
@@ -197,7 +230,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
    * swap automatically, so no prior approval is needed.
    *
    * @param {ZerionSwidgeOptions} options - The swidge options.
-   * @param {SwidgeProtocolConfig & Object} [config] - Overrides for the fee caps, plus erc-4337
+   * @param {SwidgeProtocolConfig & Record<string, unknown>} [config] - Overrides for the fee caps, plus erc-4337
    *   execution options (e.g. paymaster configuration) forwarded to the account.
    * @returns {Promise<SwidgeResult>} The swidge execution result.
    */
@@ -213,22 +246,16 @@ export default class ZerionProtocol extends SwidgeProtocol {
     const quote = this._selectQuote(response?.data ?? [])
 
     const attributes = quote.attributes
+    const prepared = await this._prepareQuote(quote, context, config)
+    const { mapped, swapTx, approveTx } = prepared
 
-    this._enforceFeeCaps(attributes, mergedConfig)
+    this._enforceFeeCaps(attributes, mergedConfig, prepared.networkFee)
 
-    const mapped = await this._mapQuote(quote, context)
-
-    if (options.minAmountOut !== undefined && mapped.toTokenAmountMin < BigInt(options.minAmountOut)) {
+    if (options.minAmountOut !== undefined && mapped.toTokenAmountMin < toBaseUnitAmount(options.minAmountOut, 'minAmountOut')) {
       throw new ZerionError('min_amount_out_not_met', `The quoted minimum output (${mapped.toTokenAmountMin}) is below the requested minAmountOut (${options.minAmountOut}).`)
     }
 
-    const swapTx = toEvmTransaction(attributes.transaction_swap.evm)
-
-    const approveTx = attributes.transaction_approve?.evm
-      ? toEvmTransaction(attributes.transaction_approve.evm)
-      : undefined
-
-    let hash
+    let hash, actualNetworkFee
 
     // Erc-4337 accounts execute call batches atomically, so any required
     // approval is bundled with the swap in a single user operation. They are
@@ -239,7 +266,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
     if (isErc4337Account) {
       const transactions = approveTx ? [approveTx, swapTx] : [swapTx]
 
-      ;({ hash } = await /** @type {IWalletAccount} */ (this._account).sendTransaction(transactions, config))
+      ;({ hash, fee: actualNetworkFee } = await /** @type {*} */ (this._account).sendTransaction(transactions, config))
     } else {
       if (approveTx) {
         throw new ZerionAllowanceError(
@@ -248,13 +275,17 @@ export default class ZerionProtocol extends SwidgeProtocol {
         )
       }
 
-      ;({ hash } = await /** @type {IWalletAccount} */ (this._account).sendTransaction(swapTx))
+      ;({ hash, fee: actualNetworkFee } = await /** @type {IWalletAccount} */ (this._account).sendTransaction(swapTx))
     }
+
+    const fees = actualNetworkFee === undefined
+      ? mapped.fees
+      : mapped.fees.map(fee => fee.type === 'network' ? { ...fee, amount: BigInt(actualNetworkFee) } : fee)
 
     return {
       id: `${context.inputChain.id}:${context.outputChain.id}:${hash}`,
       hash,
-      fees: mapped.fees,
+      fees,
       transactions: [{ hash, chain: context.inputChain.id, type: 'source' }],
       fromTokenAmount: mapped.fromTokenAmount,
       toTokenAmount: mapped.toTokenAmount,
@@ -332,13 +363,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
    * @returns {Promise<BridgeResult>} The bridge result.
    */
   async bridge (options) {
-    const result = await this.swidge({
-      fromToken: options.token,
-      toToken: options.token,
-      toChain: options.targetChain,
-      recipient: options.recipient,
-      fromTokenAmount: options.amount
-    })
+    const result = await this.swidge(await this._toBridgeSwidgeOptions(options))
 
     return {
       hash: result.hash ?? result.id,
@@ -354,18 +379,37 @@ export default class ZerionProtocol extends SwidgeProtocol {
    * @returns {Promise<Omit<BridgeResult, 'hash'>>} The bridge quote.
    */
   async quoteBridge (options) {
-    const result = await this.quoteSwidge({
-      fromToken: options.token,
-      toToken: options.token,
-      toChain: options.targetChain,
-      recipient: options.recipient,
-      fromTokenAmount: options.amount
-    })
+    const result = await this.quoteSwidge(await this._toBridgeSwidgeOptions(options))
 
     return {
       fee: this._sumFees(result.fees, 'network'),
       bridgeFee: this._sumFees(result.fees, 'other')
     }
+  }
+
+  /**
+   * Resolves the classic bridge interface's source token address to Zerion's
+   * canonical fungible id before looking up its destination implementation.
+   *
+   * @private
+   * @param {BridgeOptions} options - The bridge options.
+   * @returns {Promise<ZerionSwidgeOptions>} Equivalent swidge options.
+   */
+  async _toBridgeSwidgeOptions (options) {
+    if (!this._account) {
+      throw new ZerionError('missing_account', 'Bridge operations require the protocol to be initialized with a wallet account.')
+    }
+
+    const inputChain = await this._getAccountChain()
+    const sourceToken = await this._resolveToken(options.token, inputChain)
+
+    return /** @type {ZerionSwidgeOptions} */ ({
+      fromToken: sourceToken.fungibleId,
+      toToken: sourceToken.fungibleId,
+      toChain: options.targetChain,
+      recipient: options.recipient,
+      fromTokenAmount: options.amount
+    })
   }
 
   /**
@@ -675,6 +719,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
     }
 
     this._tokenCache.set(cacheKey, resolved)
+    this._tokenCache.set(`${chain.id}:${resolved.fungibleId.toLowerCase()}`, resolved)
 
     return resolved
   }
@@ -693,7 +738,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
       throw new ZerionError('invalid_options', "The 'fromTokenAmount' option is required.")
     }
 
-    const amount = BigInt(options.fromTokenAmount)
+    const amount = toBaseUnitAmount(options.fromTokenAmount, 'fromTokenAmount')
 
     if (amount <= 0n) {
       throw new ZerionError('invalid_options', "The 'fromTokenAmount' option must be positive.")
@@ -738,7 +783,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
         slippagePercent,
         currency: /** @type {ZerionProtocolConfig} */ (this._config).currency
       },
-      context: { amount, input, output, inputChain, outputChain }
+      context: { amount, from, input, output, inputChain, outputChain }
     }
   }
 
@@ -768,22 +813,154 @@ export default class ZerionProtocol extends SwidgeProtocol {
   }
 
   /** @private */
-  async _mapQuote (quote, context) {
+  async _prepareQuote (quote, context, executionConfig) {
+    const attributes = quote.attributes
+    const swapTx = this._validateEvmTransaction(attributes.transaction_swap?.evm, context, 'swap')
+    const approveTx = attributes.transaction_approve?.evm
+      ? this._validateEvmTransaction(attributes.transaction_approve.evm, context, 'approval')
+      : undefined
+
+    if (quote.relationships?.input_chain?.data?.id !== context.inputChain.id ||
+        quote.relationships?.output_chain?.data?.id !== context.outputChain.id) {
+      throw new ZerionQuoteError('The executable quote returned mismatched source or destination chain metadata.')
+    }
+
+    if (approveTx) this._validateApproval(approveTx, swapTx, context)
+
+    const isErc4337Account = typeof /** @type {*} */ (this._account).getUserOperationReceipt === 'function'
+    const transactions = isErc4337Account
+      ? (approveTx ? [approveTx, swapTx] : [swapTx])
+      : swapTx
+
+    let walletQuote
+
+    try {
+      walletQuote = await /** @type {*} */ (this._account).quoteSendTransaction(transactions, executionConfig)
+    } catch (err) {
+      throw new ZerionQuoteError(`The wallet could not quote the executable transaction: ${err?.message ?? err}.`, { cause: err })
+    }
+
+    let networkFeeAmount
+
+    try {
+      networkFeeAmount = toBaseUnitAmount(walletQuote?.fee, 'walletNetworkFee')
+    } catch (err) {
+      throw new ZerionQuoteError('The wallet returned an invalid network-fee quote.', { cause: err })
+    }
+
+    const networkFeeToken = attributes.network_fee?.fungible?.id
+      ? await this._resolveFeeToken(attributes.network_fee.fungible, context)
+      : await this._resolveToken('native', context.inputChain)
+
+    const networkFee = {
+      amount: networkFeeAmount,
+      token: networkFeeToken,
+      apiQuantity: attributes.network_fee?.amount?.quantity
+    }
+
+    return {
+      mapped: await this._mapQuote(quote, context, networkFee),
+      swapTx,
+      approveTx,
+      networkFee
+    }
+  }
+
+  /** @private */
+  _validateEvmTransaction (evm, context, label) {
+    if (!evm || typeof evm !== 'object') {
+      throw new ZerionQuoteError(`The executable quote is missing its ${label} transaction.`)
+    }
+
+    if (!EVM_ADDRESS_PATTERN.test(evm.to ?? '')) {
+      throw new ZerionQuoteError(`The executable quote contains an invalid ${label} transaction target.`)
+    }
+
+    if (typeof evm.from !== 'string' || evm.from.toLowerCase() !== context.from.toLowerCase()) {
+      throw new ZerionQuoteError(`The executable quote contains a ${label} transaction for a different sender.`)
+    }
+
+    try {
+      if (context.inputChain.externalId === undefined || BigInt(evm.chain_id) !== BigInt(context.inputChain.externalId)) {
+        throw new Error('chain mismatch')
+      }
+    } catch {
+      throw new ZerionQuoteError(`The executable quote contains a ${label} transaction for a different chain.`)
+    }
+
+    if (!EVM_DATA_PATTERN.test(evm.data ?? '')) {
+      throw new ZerionQuoteError(`The executable quote contains invalid ${label} transaction data.`)
+    }
+
+    let transaction
+
+    try {
+      transaction = toEvmTransaction(evm)
+    } catch (err) {
+      throw new ZerionQuoteError(`The executable quote contains an invalid ${label} transaction value.`, { cause: err })
+    }
+
+    if (transaction.value < 0n) {
+      throw new ZerionQuoteError(`The executable quote contains a negative ${label} transaction value.`)
+    }
+
+    return transaction
+  }
+
+  /** @private */
+  _validateApproval (approveTx, swapTx, context) {
+    if (!context.input.address || approveTx.to.toLowerCase() !== context.input.address.toLowerCase()) {
+      throw new ZerionQuoteError('The approval transaction does not target the expected input token.')
+    }
+
+    if (approveTx.value !== 0n) {
+      throw new ZerionQuoteError('The approval transaction must not transfer native value.')
+    }
+
+    const data = approveTx.data.slice(2)
+
+    if (data.length !== 136 || data.slice(0, 8).toLowerCase() !== ERC20_APPROVE_SELECTOR) {
+      throw new ZerionQuoteError('The approval transaction does not contain a valid ERC-20 approve call.')
+    }
+
+    const spender = `0x${data.slice(8, 72).slice(-40)}`
+    const allowance = BigInt(`0x${data.slice(72, 136)}`)
+
+    if (spender.toLowerCase() !== swapTx.to.toLowerCase()) {
+      throw new ZerionQuoteError('The approval transaction authorizes an unexpected spender.')
+    }
+
+    if (allowance < context.amount) {
+      throw new ZerionQuoteError('The approval transaction amount is below the quoted input amount.')
+    }
+  }
+
+  /** @private */
+  async _mapQuote (quote, context, networkFee) {
     const attributes = quote.attributes
 
-    const toTokenAmount = attributes.output_amount?.quantity !== undefined
-      ? toBaseUnits(attributes.output_amount.quantity, context.output.decimals)
-      : 0n
+    if (attributes.output_amount?.quantity === undefined || attributes.minimum_output_amount?.quantity === undefined) {
+      throw new ZerionQuoteError('The executable quote is missing an output amount or minimum guaranteed output amount.')
+    }
 
-    const toTokenAmountMin = attributes.minimum_output_amount?.quantity !== undefined
-      ? toBaseUnits(attributes.minimum_output_amount.quantity, context.output.decimals)
-      : toTokenAmount
+    let toTokenAmount, toTokenAmountMin
+
+    try {
+      toTokenAmount = toBaseUnits(attributes.output_amount.quantity, context.output.decimals)
+      toTokenAmountMin = toBaseUnits(attributes.minimum_output_amount.quantity, context.output.decimals)
+    } catch (err) {
+      throw new ZerionQuoteError('The executable quote contains an invalid output amount.', { cause: err })
+    }
+
+    if (toTokenAmount <= 0n || toTokenAmountMin > toTokenAmount) {
+      throw new ZerionQuoteError('The executable quote contains inconsistent output amounts.')
+    }
 
     return {
       fromTokenAmount: context.amount,
       toTokenAmount,
       toTokenAmountMin,
-      fees: await this._mapFees(attributes, context),
+      fees: await this._mapFees(attributes, context, networkFee),
       ...(attributes.estimated_time_seconds !== undefined ? { estimatedDuration: attributes.estimated_time_seconds } : {})
     }
   }
@@ -796,15 +973,13 @@ export default class ZerionProtocol extends SwidgeProtocol {
    * @private
    * @returns {Promise<SwidgeFee[]>} The mapped fees.
    */
-  async _mapFees (attributes, context) {
+  async _mapFees (attributes, context, networkFee) {
     const fees = []
 
     const append = async (block, type, description) => {
       if (block?.amount?.quantity === undefined) return
 
       const token = await this._resolveFeeToken(block.fungible, context)
-
-      if (!token) return
 
       fees.push({
         type,
@@ -816,7 +991,14 @@ export default class ZerionProtocol extends SwidgeProtocol {
       })
     }
 
-    await append({ ...attributes.network_fee, included_in_rate: false }, 'network', 'Network (gas) fee')
+    fees.push({
+      type: 'network',
+      amount: networkFee.amount,
+      token: networkFee.token.fungibleId,
+      chain: context.inputChain.id,
+      included: false,
+      description: 'Network (gas) fee'
+    })
 
     await append(attributes.protocol_fee, 'protocol', `Zerion protocol fee (${attributes.protocol_fee?.percentage ?? 0}%)`)
 
@@ -829,60 +1011,106 @@ export default class ZerionProtocol extends SwidgeProtocol {
   async _resolveFeeToken (fungibleRef, context) {
     const fungibleId = fungibleRef?.id
 
-    if (!fungibleId) return undefined
+    if (!fungibleId) {
+      throw new ZerionQuoteError('A reported fee is missing its fungible denomination.')
+    }
 
     if (fungibleId === context.input.fungibleId) return context.input
 
     if (fungibleId === context.output.fungibleId) return context.output
 
-    for (const chain of [context.inputChain, context.outputChain]) {
+    const chains = context.inputChain.id === context.outputChain.id
+      ? [context.inputChain]
+      : [context.inputChain, context.outputChain]
+
+    for (const chain of chains) {
       try {
         return await this._resolveToken(fungibleId, chain)
-      } catch {}
+      } catch (err) {
+        if (!(err instanceof ZerionCapabilityError) && err?.status !== 404) throw err
+      }
     }
 
-    return undefined
+    throw new ZerionQuoteError(`The reported fee token ('${fungibleId}') has no implementation on the quoted route.`)
   }
 
   /**
-   * Enforces the configured fee caps against a quote, using the fiat values reported
-   * by the Zerion API. Caps are skipped when the API reports no fiat value for the
-   * corresponding amounts.
+   * Enforces configured fee caps using the wallet's exact network-fee quote and the
+   * fiat conversion data reported by Zerion. Requested caps fail closed whenever
+   * the data needed for a trustworthy comparison is absent.
    *
    * @private
    */
-  _enforceFeeCaps (attributes, config) {
+  _enforceFeeCaps (attributes, config, networkFee) {
     const { maxNetworkFeeBps, maxProtocolFeeBps } = config
 
     if (maxNetworkFeeBps === undefined && maxProtocolFeeBps === undefined) return
 
+    const networkCap = maxNetworkFeeBps === undefined
+      ? undefined
+      : normalizeFeeCap(maxNetworkFeeBps, 'maxNetworkFeeBps')
+    const protocolCap = maxProtocolFeeBps === undefined
+      ? undefined
+      : normalizeFeeCap(maxProtocolFeeBps, 'maxProtocolFeeBps')
     const inputUsd = attributes.input_amount?.usd_value
 
-    if (maxNetworkFeeBps !== undefined) {
-      const networkUsd = attributes.network_fee?.amount?.usd_value
+    if (typeof inputUsd !== 'number' || !Number.isFinite(inputUsd) || inputUsd <= 0) {
+      throw new ZerionError('fee_cap_unverifiable', 'The configured fee cap cannot be verified because the quote has no valid input USD value.')
+    }
 
-      if (typeof inputUsd === 'number' && inputUsd > 0 && typeof networkUsd === 'number') {
-        const bps = (networkUsd / inputUsd) * 10_000
+    if (networkCap !== undefined) {
+      const reportedNetworkUsd = attributes.network_fee?.amount?.usd_value
+      const apiQuantity = networkFee?.apiQuantity
 
-        if (bps > Number(maxNetworkFeeBps)) {
-          throw new ZerionError('fee_cap_exceeded', `The network fee (${bps.toFixed(1)} bps) exceeds maxNetworkFeeBps (${maxNetworkFeeBps}).`)
-        }
+      if (typeof reportedNetworkUsd !== 'number' || !Number.isFinite(reportedNetworkUsd) || reportedNetworkUsd < 0 || apiQuantity === undefined) {
+        throw new ZerionError('fee_cap_unverifiable', 'maxNetworkFeeBps cannot be verified because the quote has no valid network-fee USD value.')
+      }
+
+      let apiNetworkAmount
+
+      try {
+        apiNetworkAmount = toBaseUnits(apiQuantity, networkFee.token.decimals)
+      } catch (err) {
+        throw new ZerionError('fee_cap_unverifiable', 'maxNetworkFeeBps cannot be verified because the reported network-fee amount is invalid.', { cause: err })
+      }
+
+      if (apiNetworkAmount <= 0n && networkFee.amount > 0n) {
+        throw new ZerionError('fee_cap_unverifiable', 'maxNetworkFeeBps cannot be verified from a zero provider network-fee estimate.')
+      }
+
+      const networkUsd = apiNetworkAmount === 0n
+        ? 0
+        : reportedNetworkUsd * Number(networkFee.amount) / Number(apiNetworkAmount)
+
+      if (!Number.isFinite(networkUsd)) {
+        throw new ZerionError('fee_cap_unverifiable', 'maxNetworkFeeBps cannot be verified from the provider fee conversion data.')
+      }
+
+      const bps = (networkUsd / inputUsd) * 10_000
+
+      if (bps > networkCap) {
+        throw new ZerionError('fee_cap_exceeded', `The network fee (${bps.toFixed(1)} bps) exceeds maxNetworkFeeBps (${maxNetworkFeeBps}).`)
       }
     }
 
-    if (maxProtocolFeeBps !== undefined) {
-      const protocolUsd = attributes.protocol_fee?.amount?.usd_value
-      const bridgeUsd = attributes.bridge_fee?.amount?.usd_value
+    if (protocolCap !== undefined) {
+      let feesUsd = 0
 
-      let bps
+      for (const [name, block] of [['protocol', attributes.protocol_fee], ['bridge', attributes.bridge_fee]]) {
+        if (block === undefined || block === null) continue
 
-      if (typeof inputUsd === 'number' && inputUsd > 0 && (typeof protocolUsd === 'number' || typeof bridgeUsd === 'number')) {
-        bps = (((protocolUsd ?? 0) + (bridgeUsd ?? 0)) / inputUsd) * 10_000
-      } else if (typeof attributes.protocol_fee?.percentage === 'number') {
-        bps = attributes.protocol_fee.percentage * 100
+        const usd = block.amount?.usd_value
+
+        if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) {
+          throw new ZerionError('fee_cap_unverifiable', `maxProtocolFeeBps cannot be verified because the ${name} fee has no valid USD value.`)
+        }
+
+        feesUsd += usd
       }
 
-      if (bps !== undefined && bps > Number(maxProtocolFeeBps)) {
+      const bps = (feesUsd / inputUsd) * 10_000
+
+      if (bps > protocolCap) {
         throw new ZerionError('fee_cap_exceeded', `The protocol and bridge fees (${bps.toFixed(1)} bps) exceed maxProtocolFeeBps (${maxProtocolFeeBps}).`)
       }
     }

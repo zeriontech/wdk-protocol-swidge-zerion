@@ -51,11 +51,11 @@ export default class ZerionProtocol extends SwidgeProtocol {
      * swap automatically, so no prior approval is needed.
      *
      * @param {ZerionSwidgeOptions} options - The swidge options.
-     * @param {SwidgeProtocolConfig & Object} [config] - Overrides for the fee caps, plus erc-4337
+     * @param {SwidgeProtocolConfig & Record<string, unknown>} [config] - Overrides for the fee caps, plus erc-4337
      *   execution options (e.g. paymaster configuration) forwarded to the account.
      * @returns {Promise<SwidgeResult>} The swidge execution result.
      */
-    swidge(options: ZerionSwidgeOptions, config?: SwidgeProtocolConfig & any): Promise<SwidgeResult>;
+    swidge(options: ZerionSwidgeOptions, config?: SwidgeProtocolConfig & Record<string, unknown>): Promise<SwidgeResult>;
     /**
      * Maps classic swap options to swidge options, translating the exact-input
      * constraint into the classic interface's vocabulary.
@@ -65,6 +65,15 @@ export default class ZerionProtocol extends SwidgeProtocol {
      * @returns {ZerionSwidgeOptions} The equivalent swidge options.
      */
     private _toSwidgeOptions;
+    /**
+     * Resolves the classic bridge interface's source token address to Zerion's
+     * canonical fungible id before looking up its destination implementation.
+     *
+     * @private
+     * @param {BridgeOptions} options - The bridge options.
+     * @returns {Promise<ZerionSwidgeOptions>} Equivalent swidge options.
+     */
+    private _toBridgeSwidgeOptions;
     /**
      * Retrieves the current status of a swidge by inspecting the source transaction.
      *
@@ -132,6 +141,12 @@ export default class ZerionProtocol extends SwidgeProtocol {
     /** @private */
     private _sumFees;
     /** @private */
+    private _prepareQuote;
+    /** @private */
+    private _validateEvmTransaction;
+    /** @private */
+    private _validateApproval;
+    /** @private */
     private _mapQuote;
     /**
      * Maps Zerion fee blocks to the swidge fee model. Zerion's network fee is charged
@@ -145,9 +160,9 @@ export default class ZerionProtocol extends SwidgeProtocol {
     /** @private */
     private _resolveFeeToken;
     /**
-     * Enforces the configured fee caps against a quote, using the fiat values reported
-     * by the Zerion API. Caps are skipped when the API reports no fiat value for the
-     * corresponding amounts.
+     * Enforces configured fee caps using the wallet's exact network-fee quote and the
+     * fiat conversion data reported by Zerion. Requested caps fail closed whenever
+     * the data needed for a trustworthy comparison is absent.
      *
      * @private
      */
@@ -195,6 +210,10 @@ export type ZerionProtocolSpecificConfig = {
      * - Maximum number of retries for retryable API failures.
      */
     maxRetries?: number;
+    /**
+     * - Base delay between retries in milliseconds.
+     */
+    retryDelayMs?: number;
     /**
      * - Custom fetch implementation.
      */

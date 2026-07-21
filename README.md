@@ -163,7 +163,7 @@ Parameters:
   - `maxNetworkFeeBps` (number | bigint, optional): maximum network fee, in basis points of the input amount
   - `maxProtocolFeeBps` (number | bigint, optional): maximum protocol + bridge fees, in basis points of the input amount
   - `currency` (string, optional): currency for fiat values in quotes (default `usd`)
-  - `baseUrl`, `timeoutMs`, `maxRetries`, `fetch`, `client` (optional): transport overrides
+  - `baseUrl`, `timeoutMs`, `maxRetries`, `retryDelayMs`, `fetch`, `client` (optional): transport overrides
 
 ### Methods
 
@@ -199,6 +199,7 @@ Parameters:
 
 - **ERC-4337 accounts**: when the API returns an approval transaction, it is bundled atomically with the swap in a single user operation — no prior approval needed.
 - **Standard accounts**: the input token must be approved beforehand. If an approval is missing, `swidge()` throws a `ZerionAllowanceError` whose `details.transaction` contains the ready-to-send approve transaction; send it (or use the account's `approve` method), then retry.
+- API-provided swap and approval transactions are checked for the expected sender, source chain, token, spender, and amount before they are quoted or signed.
 
 ### Errors
 
@@ -219,7 +220,7 @@ All EVM chains where Zerion supports trading (Ethereum, Base, Arbitrum, Optimism
 - **API key**: treat your Zerion API key as a secret; do not ship it in client-side code you don't control
 - **Quote first**: call `quoteSwidge` before `swidge` and inspect amounts and fees
 - **Slippage**: set an explicit `slippage` or rely on Zerion's auto-slippage; `minAmountOut` adds a hard floor
-- **Fee caps**: use `maxNetworkFeeBps` / `maxProtocolFeeBps` to bound costs programmatically
+- **Fee caps**: use `maxNetworkFeeBps` / `maxProtocolFeeBps` to bound costs programmatically. Network fees come from `account.quoteSendTransaction()` for the exact wallet transaction; a configured cap fails closed if the provider omits the fiat data needed to verify it.
 
 ## 🛠️ Development
 

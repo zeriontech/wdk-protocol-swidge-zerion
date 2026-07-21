@@ -67,6 +67,10 @@ function retryDelayMs (attempt, baseDelayMs, response) {
     const seconds = Number(retryAfter)
 
     if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
+
+    const retryAt = Date.parse(retryAfter)
+
+    if (Number.isFinite(retryAt)) return Math.min(Math.max(retryAt - Date.now(), 0), MAX_RETRY_DELAY_MS)
   }
 
   return Math.min(baseDelayMs * (2 ** attempt), MAX_RETRY_DELAY_MS)
@@ -82,7 +86,9 @@ async function parseErrorBody (response) {
       detail: typeof error?.detail === 'string' ? error.detail : `HTTP ${response.status}`,
       body
     }
-  } catch {
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err
+
     return { title: 'api_error', detail: `HTTP ${response.status}`, body: null }
   }
 }
@@ -227,36 +233,52 @@ export class ZerionApiClient {
 
     for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), this._timeoutMs)
+      let timer
+
+      const timeout = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          controller.abort()
+
+          const error = new Error(`Request to '${path}' timed out after ${this._timeoutMs}ms.`)
+          error.name = 'AbortError'
+          reject(error)
+        }, this._timeoutMs)
+      })
 
       let response
+      let parsedError
 
       try {
-        response = await this._fetch(url, {
+        response = await Promise.race([this._fetch(url, {
           method: 'GET',
           headers: {
             accept: 'application/json',
             authorization: this._authorization
           },
           signal: controller.signal
-        })
+        }), timeout])
+
+        if (response.ok) return await Promise.race([response.json(), timeout])
+
+        parsedError = await Promise.race([parseErrorBody(response), timeout])
       } catch (err) {
         lastError = new ZerionApiError('network_error', `Request to '${path}' failed: ${err.message ?? err}.`, 0, { url })
-
-        if (attempt < this._maxRetries) {
-          await sleep(retryDelayMs(attempt, this._retryDelayMs))
-
-          continue
-        }
-
-        throw lastError
       } finally {
         clearTimeout(timer)
       }
 
-      if (response.ok) return await response.json()
+      if (lastError?.status === 0) {
+        if (attempt < this._maxRetries) {
+          await sleep(retryDelayMs(attempt, this._retryDelayMs))
 
-      const { title, detail, body } = await parseErrorBody(response)
+          lastError = undefined
+          continue
+        }
+
+        throw lastError
+      }
+
+      const { title, detail, body } = parsedError
 
       lastError = new ZerionApiError(title, detail, response.status, { url, body })
 
