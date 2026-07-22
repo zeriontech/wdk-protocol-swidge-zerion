@@ -1,0 +1,12 @@
+{
+  "include": [
+    "tests/types/**/*.ts"
+  ],
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "skipLibCheck": false
+  }
+}
