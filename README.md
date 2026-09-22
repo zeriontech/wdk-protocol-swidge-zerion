@@ -163,6 +163,7 @@ Parameters:
   - `maxNetworkFeeBps` (number | bigint, optional): maximum network fee, in basis points of the input amount
   - `maxProtocolFeeBps` (number | bigint, optional): maximum protocol + bridge fees, in basis points of the input amount
   - `currency` (string, optional): currency for fiat values in quotes (default `usd`)
+  - `approvalPollIntervalMs` / `approvalTimeoutMs` (number, optional): how often, and for how long, a standard account waits for its approval transaction to confirm (defaults `3000` / `180000`)
   - `baseUrl`, `timeoutMs`, `maxRetries`, `retryDelayMs`, `fetch`, `client` (optional): transport overrides
 
 ### Methods
@@ -189,26 +190,38 @@ Parameters:
 
 #### Status semantics
 
-`swidge()` returns `id` in the form `fromChain:toChain:hash`. `getSwidgeStatus(id)`:
+`swidge()` returns `id` as the source transaction hash for same-chain swaps, and as `fromChain:toChain:hash` for cross-chain bridges. `getSwidgeStatus(id)`:
 
-- reads the source transaction receipt through the account's provider
+- reads the source transaction receipt through the account's provider (the account must be on the source chain)
+- throws `NoSuchElementError` when no transaction exists for the id
 - same-chain swaps: `pending` → `completed` / `failed`
 - cross-chain bridges: reports `pending` after the source transaction succeeds — destination settlement is executed by the routed bridge provider (typically within the quote's `estimatedDuration`) and is not yet tracked by the Zerion API
 
 #### Approvals
 
-- **ERC-4337 accounts**: when the API returns an approval transaction, it is bundled atomically with the swap in a single user operation — no prior approval needed.
-- **Standard accounts**: the input token must be approved beforehand. If an approval is missing, `swidge()` throws a `ZerionAllowanceError` whose `details.transaction` contains the ready-to-send approve transaction; send it (or use the account's `approve` method), then retry.
+When the input token is not yet approved, the approval transaction returned by the API is executed as part of `swidge()`:
+
+- **ERC-4337 accounts**: the approval is bundled atomically with the swap in a single user operation.
+- **Standard accounts**: the approval is sent first and awaited (`approvalPollIntervalMs` / `approvalTimeoutMs`), then the swap is sent. Both transactions are listed in the result's `transactions` array (`type: 'approval'` and `type: 'source'`), and the reported network fee is the total actually paid.
 - API-provided swap and approval transactions are checked for the expected sender, source chain, token, spender, and amount before they are quoted or signed.
 
 ### Errors
 
-All errors extend `ZerionError` (`code`, `message`, `details`):
+The module throws the standard WDK error types exported by `@tetherto/wdk-wallet/protocols`, plus two Zerion-specific subclasses:
 
-- `ZerionApiError` — HTTP failure from the Zerion API (includes `status`)
-- `ZerionQuoteError` — no executable route for the requested pair
-- `ZerionCapabilityError` — unsupported operation (exact-out, unknown chain, distinct refund address, ...)
-- `ZerionAllowanceError` — missing ERC-20 approval (standard accounts only)
+| Error | Extends | When |
+|-------|---------|------|
+| `ValueError` | `WdkError` | Invalid options: exact-output requests, non-positive or unsafe amounts, invalid slippage, unknown chains, a distinct `refundAddress`, malformed swidge ids |
+| `InvalidTokenError` | `WdkError` | A token is unknown to Zerion or has no implementation on the requested chain |
+| `ReadOnlyAccountRequiredError` / `AccountRequiredError` | `WdkError` | Quoting without an account / executing with a read-only account |
+| `ProviderRequiredError` | `WdkError` | The account is not connected to a provider |
+| `ZerionApiError` | `ProviderError` | The Zerion API cannot be reached, rejects the request, or returns an invalid payload (`code`, `status`, `details`) |
+| `ProviderError` | `WdkError` | The account's provider cannot report its network, wallet estimation fails, or a standard-account approval reverted or timed out (`reason`) |
+| `ZerionQuoteError` | `SwidgeError` | No executable route, or the quoted minimum output is below `minAmountOut` (`reason`, `code`, `hint`) |
+| `MaximumFeeExceededError` | `WdkError` | A configured fee cap is exceeded, or cannot be verified from the quote |
+| `NoSuchElementError` | `WdkError` | `getSwidgeStatus` finds no transaction for the id |
+
+Through the legacy `swap()` / `bridge()` interfaces, a `ZerionQuoteError` surfaces as `SwapError` / `BridgeError` with the same `reason`.
 
 ## 🌐 Supported Networks
 

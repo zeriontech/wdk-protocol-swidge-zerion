@@ -22,24 +22,32 @@
 
 /** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeResult} SwidgeResult */
 
+/** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeFee} SwidgeFee */
+
+/** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeTransaction} SwidgeTransaction */
+
+/** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeStatusOptions} SwidgeStatusOptions */
+
 /** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeStatusResult} SwidgeStatusResult */
 
 /** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeSupportedChain} SwidgeSupportedChain */
 
 /** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeSupportedToken} SwidgeSupportedToken */
 
+/** @typedef {import('@tetherto/wdk-wallet/protocols').SwidgeSupportedTokensOptions} SwidgeSupportedTokensOptions */
+
 /** @typedef {import('./src/zerion-protocol.js').ZerionProtocolConfig} ZerionProtocolConfig */
 
 /** @typedef {import('./src/zerion-protocol.js').ZerionSwidgeOptions} ZerionSwidgeOptions */
 
-export { default } from './src/zerion-protocol.js'
+/** @typedef {import('./src/errors.js').ZerionApiErrorDetails} ZerionApiErrorDetails */
+
+/** @typedef {import('./src/errors.js').ZerionQuoteErrorDetails} ZerionQuoteErrorDetails */
+
+export { default, default as ZerionProtocol } from './src/zerion-protocol.js'
+
+export { ISwidgeProtocol } from '@tetherto/wdk-wallet/protocols'
 
 export { ZerionApiClient } from './src/zerion-api-client.js'
 
-export {
-  ZerionError,
-  ZerionApiError,
-  ZerionQuoteError,
-  ZerionCapabilityError,
-  ZerionAllowanceError
-} from './src/errors.js'
+export { ZerionApiError, ZerionQuoteError, toSwidgeErrorReason } from './src/errors.js'

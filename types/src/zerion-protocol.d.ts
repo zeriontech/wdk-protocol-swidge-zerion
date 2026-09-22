@@ -34,50 +34,38 @@ export default class ZerionProtocol extends SwidgeProtocol {
     /** @private @type {Map<string, ZerionToken>} */
     private _tokenCache;
     /**
+     * Executes a same-chain swap or cross-chain bridge through the Zerion API.
+     *
+     * When the input token is not yet approved, the approval returned by the API is
+     * executed as part of the operation: erc-4337 accounts bundle it with the swap in a
+     * single user operation, standard accounts send it first and wait for it to confirm.
+     * Every transaction produced is listed in the result's `transactions` array.
+     *
+     * @param {ZerionSwidgeOptions} options - The swidge options.
+     * @param {SwidgeProtocolConfig & Record<string, unknown>} [config] - Overrides for the fee caps, plus erc-4337
+     *   execution options (e.g. paymaster configuration) forwarded to the account.
+     * @returns {Promise<SwidgeResult>} The swidge execution result.
+     * @throws {AccountRequiredError} If the protocol was created without a full account.
+     * @throws {ValueError} If the swidge options are not valid, including exact-output requests.
+     * @throws {InvalidTokenError} If a token cannot be resolved on its chain.
+     * @throws {ProviderRequiredError} If the account is not connected to a provider.
+     * @throws {ProviderError} If the Zerion API, the account's provider, or the approval transaction fails.
+     * @throws {ZerionQuoteError} If no executable route is available or the minimum output is not met.
+     * @throws {MaximumFeeExceededError} If a configured fee cap is exceeded or cannot be verified.
+     */
+    swidge(options: ZerionSwidgeOptions, config?: SwidgeProtocolConfig & Record<string, unknown>): Promise<SwidgeResult>;
+    /**
      * Quotes the estimated costs and output of a same-chain swap or cross-chain bridge.
-     * Quotes are non-binding; the best route across Zerion's aggregated liquidity
-     * sources is selected automatically.
      *
      * @param {ZerionSwidgeOptions} options - The swidge options.
      * @returns {Promise<SwidgeQuote>} The quoted swidge details.
      */
     quoteSwidge(options: ZerionSwidgeOptions): Promise<SwidgeQuote>;
     /**
-     * Executes a same-chain swap or cross-chain bridge through the Zerion API.
-     *
-     * With standard (non erc-4337) accounts, the input token must already be approved:
-     * if an approval is missing, a {@link ZerionAllowanceError} is thrown carrying the
-     * ready-to-send approve transaction. Erc-4337 accounts bundle the approval with the
-     * swap automatically, so no prior approval is needed.
-     *
-     * @param {ZerionSwidgeOptions} options - The swidge options.
-     * @param {SwidgeProtocolConfig & Record<string, unknown>} [config] - Overrides for the fee caps, plus erc-4337
-     *   execution options (e.g. paymaster configuration) forwarded to the account.
-     * @returns {Promise<SwidgeResult>} The swidge execution result.
-     */
-    swidge(options: ZerionSwidgeOptions, config?: SwidgeProtocolConfig & Record<string, unknown>): Promise<SwidgeResult>;
-    /**
-     * Maps classic swap options to swidge options, translating the exact-input
-     * constraint into the classic interface's vocabulary.
-     *
-     * @private
-     * @param {SwapOptions} options - The swap options.
-     * @returns {ZerionSwidgeOptions} The equivalent swidge options.
-     */
-    private _toSwidgeOptions;
-    /**
-     * Resolves the classic bridge interface's source token address to Zerion's
-     * canonical fungible id before looking up its destination implementation.
-     *
-     * @private
-     * @param {BridgeOptions} options - The bridge options.
-     * @returns {Promise<ZerionSwidgeOptions>} Equivalent swidge options.
-     */
-    private _toBridgeSwidgeOptions;
-    /**
      * Retrieves the current status of a swidge by inspecting the source transaction.
      *
-     * @param {string} id - The swidge id returned by {@link swidge} ('fromChain:toChain:hash'), or a plain transaction hash.
+     * @param {string} id - The swidge id returned by {@link swidge}: a transaction hash for same-chain swaps, or
+     *   'fromChain:toChain:hash' for cross-chain bridges.
      * @param {ZerionSwidgeStatusOptions} [options] - Optional source/destination chain hints (used with plain-hash ids).
      * @returns {Promise<ZerionSwidgeStatusResult>} The current swidge status.
      */
@@ -95,77 +83,39 @@ export default class ZerionProtocol extends SwidgeProtocol {
      * @returns {Promise<ZerionSwidgeSupportedToken[]>} The supported tokens.
      */
     getSupportedTokens(options?: ZerionSwidgeSupportedTokensOptions): Promise<ZerionSwidgeSupportedToken[]>;
-    /**
-     * Maps a Zerion fungibles response to supported-token entries on a chain.
-     *
-     * @private
-     * @returns {SwidgeSupportedToken[]} The mapped tokens.
-     */
+    /** @private */
     private _mapSupportedTokens;
-    /**
-     * Asserts that the configured account can sign and broadcast transactions.
-     * Writable accounts are detected by their `sendTransaction` capability
-     * (read-only accounts do not expose it), keeping the wallet packages out
-     * of the module's runtime dependency tree.
-     *
-     * @private
-     */
+    /** @private */
     private _assertWritableAccount;
+    /** @private */
+    private _waitForTransaction;
     /** @private */
     private _getChains;
     /** @private */
     private _getAccountChain;
-    /**
-     * Resolves a chain reference (Zerion chain id, EIP-155 numeric id, or hex id) to a Zerion chain.
-     *
-     * @private
-     * @param {string | number | bigint} chainRef - The chain reference.
-     * @returns {Promise<ZerionChain>} The resolved chain.
-     */
+    /** @private */
     private _normalizeChain;
-    /**
-     * Resolves a token reference to a Zerion fungible on the given chain.
-     * Accepts an ERC-20 contract address, a Zerion fungible id (e.g. 'eth'),
-     * or a native-asset sentinel ('native' or 0xeeee...eeee).
-     *
-     * @private
-     * @param {string} token - The token reference.
-     * @param {ZerionChain} chain - The chain the token lives on.
-     * @returns {Promise<ZerionToken>} The resolved token.
-     */
+    /** @private */
     private _resolveToken;
     /** @private */
     private _buildQuoteRequest;
     /** @private */
     private _selectQuote;
     /** @private */
-    private _sumFees;
-    /** @private */
     private _prepareQuote;
+    /** @private */
+    private _quoteWithWallet;
     /** @private */
     private _validateEvmTransaction;
     /** @private */
     private _validateApproval;
     /** @private */
     private _mapQuote;
-    /**
-     * Maps Zerion fee blocks to the swidge fee model. Zerion's network fee is charged
-     * on the source chain, Zerion's own fee is 'protocol', and bridge-provider fees
-     * are 'other' so classic bridge adapters do not mix denominations.
-     *
-     * @private
-     * @returns {Promise<SwidgeFee[]>} The mapped fees.
-     */
+    /** @private */
     private _mapFees;
     /** @private */
     private _resolveFeeToken;
-    /**
-     * Enforces configured fee caps using the wallet's exact network-fee quote and the
-     * fiat conversion data reported by Zerion. Requested caps fail closed whenever
-     * the data needed for a trustworthy comparison is absent.
-     *
-     * @private
-     */
+    /** @private */
     private _enforceFeeCaps;
 }
 export type IWalletAccount = import("@tetherto/wdk-wallet").IWalletAccount;
@@ -175,15 +125,12 @@ export type SwidgeOptions = import("@tetherto/wdk-wallet/protocols").SwidgeOptio
 export type SwidgeQuote = import("@tetherto/wdk-wallet/protocols").SwidgeQuote;
 export type SwidgeResult = import("@tetherto/wdk-wallet/protocols").SwidgeResult;
 export type SwidgeFee = import("@tetherto/wdk-wallet/protocols").SwidgeFee;
+export type SwidgeTransaction = import("@tetherto/wdk-wallet/protocols").SwidgeTransaction;
 export type SwidgeStatusOptions = import("@tetherto/wdk-wallet/protocols").SwidgeStatusOptions;
 export type SwidgeStatusResult = import("@tetherto/wdk-wallet/protocols").SwidgeStatusResult;
 export type SwidgeSupportedChain = import("@tetherto/wdk-wallet/protocols").SwidgeSupportedChain;
 export type SwidgeSupportedToken = import("@tetherto/wdk-wallet/protocols").SwidgeSupportedToken;
 export type SwidgeSupportedTokensOptions = import("@tetherto/wdk-wallet/protocols").SwidgeSupportedTokensOptions;
-export type SwapOptions = import("@tetherto/wdk-wallet/protocols").SwapOptions;
-export type SwapResult = import("@tetherto/wdk-wallet/protocols").SwapResult;
-export type BridgeOptions = import("@tetherto/wdk-wallet/protocols").BridgeOptions;
-export type BridgeResult = import("@tetherto/wdk-wallet/protocols").BridgeResult;
 export type ZerionProtocolSpecificConfig = {
     /**
      * - The Zerion API key (from https://dashboard.zerion.io). Required unless a custom client is provided.
@@ -203,15 +150,23 @@ export type ZerionProtocolSpecificConfig = {
      */
     currency?: string;
     /**
-     * - Per-request timeout in milliseconds.
+     * - Interval between approval-confirmation polls for standard accounts. Defaults to 3000.
+     */
+    approvalPollIntervalMs?: number;
+    /**
+     * - Maximum time to wait for an approval to confirm for standard accounts. Defaults to 180000.
+     */
+    approvalTimeoutMs?: number;
+    /**
+     * - Per-request timeout in milliseconds. Defaults to 30000.
      */
     timeoutMs?: number;
     /**
-     * - Maximum number of retries for retryable API failures.
+     * - Maximum number of retries for retryable API failures. Defaults to 2.
      */
     maxRetries?: number;
     /**
-     * - Base delay between retries in milliseconds.
+     * - Base delay between retries in milliseconds. Defaults to 400.
      */
     retryDelayMs?: number;
     /**
@@ -224,13 +179,7 @@ export type ZerionProtocolSpecificConfig = {
     client?: ZerionApiClient;
 };
 export type ZerionProtocolConfig = SwidgeProtocolConfig & ZerionProtocolSpecificConfig;
-export type ZerionSwidgeOptionsExtension = {
-    /**
-     * - Abort execution when the quoted minimum output is below this base-unit amount.
-     */
-    minAmountOut?: number | bigint;
-};
-export type ZerionSwidgeOptions = SwidgeOptions & ZerionSwidgeOptionsExtension;
+export type ZerionSwidgeOptions = SwidgeOptions;
 export type ZerionSwidgeStatusOptions = SwidgeStatusOptions;
 export type ZerionSwidgeStatusResult = SwidgeStatusResult;
 export type ZerionSwidgeSupportedChain = SwidgeSupportedChain;
@@ -252,7 +201,7 @@ export type ZerionChain = {
     /**
      * - Chain capability flags (e.g. supports_trading, supports_bridge).
      */
-    flags: any;
+    flags: Record<string, boolean>;
 };
 export type ZerionToken = {
     /**
@@ -271,6 +220,20 @@ export type ZerionToken = {
      * - The token contract address, or null for native assets.
      */
     address: string | null;
+};
+export type ZerionEvmTransaction = {
+    /**
+     * - The transaction target.
+     */
+    to: string;
+    /**
+     * - The native value attached to the transaction, in wei.
+     */
+    value: bigint;
+    /**
+     * - The transaction calldata.
+     */
+    data: string;
 };
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { ZerionApiClient } from './zerion-api-client.js';
