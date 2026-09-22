@@ -1,8 +1,18 @@
 # wdk-protocol-swidge-zerion
 
+[![Built with WDK](https://raw.githubusercontent.com/tetherto/wdk-docs/refs/heads/main/public/assets/branding/wdk-badge-color-dark.svg)](https://docs.wdk.tether.io)
+
 **Note**: This package is currently in beta. Please test thoroughly in development environments before using in production.
 
 A WDK Swidge protocol module that lets EVM wallet accounts swap and bridge tokens through the [Zerion API](https://developers.zerion.io). One integration covers same-chain swaps **and** cross-chain bridges: Zerion aggregates quotes from multiple DEX aggregators and bridge providers and returns the best executable route with ready-to-sign transactions.
+
+| | |
+|---|---|
+| WDK interface | `SwidgeProtocol` / `ISwidgeProtocol` from `@tetherto/wdk-wallet/protocols` (also exposes the legacy `SwapProtocol` and `BridgeProtocol` methods) |
+| WDK version | `@tetherto/wdk-wallet` `1.0.0-beta.19`, `@tetherto/wdk-wallet-evm` `1.0.0-beta.19`, `@tetherto/wdk-wallet-evm-erc-4337` `1.0.0-beta.20` |
+| Runtimes | Node.js ≥ 20, Bare (`bare.js` entry) |
+| Provider | [Zerion API](https://developers.zerion.io) — `GET /v1/swap/quotes/`, `/v1/chains/`, `/v1/fungibles/`, `/v1/swap/fungibles/` |
+| Maintainer | [Zerion](https://zerion.io) — security reports: see [SECURITY.md](SECURITY.md) |
 
 This module can be managed by the [`@tetherto/wdk`](https://github.com/tetherto/wdk) suite, which provides a unified interface for managing multiple WDK wallet and protocol modules across different blockchains.
 
@@ -21,6 +31,7 @@ For documentation on the complete WDK ecosystem, see https://docs.wdk.tether.io.
 - **Auto-slippage**: when no slippage is configured, Zerion picks a value based on the pair's volatility and liquidity
 - **Fee transparency and caps**: itemised network / protocol / bridge fees, with `maxNetworkFeeBps` and `maxProtocolFeeBps` enforcement
 - **Data-driven token and chain discovery**: `getSupportedChains` and `getSupportedTokens` come straight from the Zerion API — no hardcoded lists
+- **WDK-native errors**: every failure is a typed WDK error (`ValueError`, `InvalidTokenError`, `ProviderError`, `SwidgeError`, `MaximumFeeExceededError`, ...) so wallet apps handle it like any other WDK module
 - **TypeScript definitions** and Bare runtime compatibility
 
 ## ⬇️ Installation
@@ -29,7 +40,9 @@ For documentation on the complete WDK ecosystem, see https://docs.wdk.tether.io.
 npm install wdk-protocol-swidge-zerion
 ```
 
-You will need a Zerion API key: create one at https://dashboard.zerion.io.
+The WDK wallet modules (`@tetherto/wdk-wallet`, `@tetherto/wdk-wallet-evm`, `@tetherto/wdk-wallet-evm-erc-4337`) are installed as pinned dependencies.
+
+You will need a Zerion API key: create one at https://dashboard.zerion.io. Copy [`.env.example`](.env.example) to `.env` to run the demo and the examples locally.
 
 ## 🚀 Quick Start
 
@@ -158,13 +171,22 @@ Parameters:
 
 - `account` (`WalletAccountEvm | WalletAccountEvmErc4337 | WalletAccountReadOnlyEvm | WalletAccountReadOnlyEvmErc4337 | undefined`): the wallet account, or `undefined` for a discovery-only instance
 - `config` (object):
-  - `apiKey` (string, required): your Zerion API key
-  - `slippagePercent` (number, optional): default slippage in percent (e.g. `1` for 1%); when omitted, Zerion auto-selects
-  - `maxNetworkFeeBps` (number | bigint, optional): maximum network fee, in basis points of the input amount
-  - `maxProtocolFeeBps` (number | bigint, optional): maximum protocol + bridge fees, in basis points of the input amount
-  - `currency` (string, optional): currency for fiat values in quotes (default `usd`)
-  - `approvalPollIntervalMs` / `approvalTimeoutMs` (number, optional): how often, and for how long, a standard account waits for its approval transaction to confirm (defaults `3000` / `180000`)
-  - `baseUrl`, `timeoutMs`, `maxRetries`, `retryDelayMs`, `fetch`, `client` (optional): transport overrides
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `apiKey` | `string` | — (required) | Your Zerion API key, sent as HTTP Basic auth |
+| `slippagePercent` | `number` | Zerion auto-slippage | Default slippage in percent (e.g. `1` for 1%) when a request does not set `slippage` |
+| `maxNetworkFeeBps` | `number \| bigint` | unlimited | Maximum network fee, in basis points of the input amount |
+| `maxProtocolFeeBps` | `number \| bigint` | unlimited | Maximum protocol + bridge fees, in basis points of the input amount |
+| `currency` | `string` | `'usd'` | Currency for fiat values in quotes |
+| `approvalPollIntervalMs` | `number` | `3000` | How often a standard account polls for its approval transaction receipt |
+| `approvalTimeoutMs` | `number` | `180000` | How long a standard account waits for its approval transaction before failing |
+| `baseUrl` | `string` | `'https://api.zerion.io'` | Zerion API base url |
+| `timeoutMs` | `number` | `30000` | Per-request timeout |
+| `maxRetries` | `number` | `2` | Retries for `408`, `429`, `5xx` and network failures (exponential backoff, honours `Retry-After`) |
+| `retryDelayMs` | `number` | `400` | Base retry delay |
+| `fetch` | `typeof fetch` | `globalThis.fetch` | Custom fetch implementation |
+| `client` | `ZerionApiClient` | — | Pre-configured API client (overrides the transport options above) |
 
 ### Methods
 
@@ -187,15 +209,37 @@ Parameters:
 - `recipient` (string, optional): output receiver; defaults to the account address (required for Solana destinations)
 - `slippage` (number, optional): decimal slippage (e.g. `0.01` for 1%)
 - `minAmountOut` (bigint | number, optional): abort if the quoted minimum output is below this value
+- `refundAddress` (string, optional): Zerion routes always refund the sending wallet, so only the account's own address is accepted; any other value throws `ValueError`
+- `toTokenAmount`: **not supported** — the Zerion API is exact-input only, exact-output requests throw `ValueError`
 
-#### Status semantics
+#### Status mapping
 
-`swidge()` returns `id` as the source transaction hash for same-chain swaps, and as `fromChain:toChain:hash` for cross-chain bridges. `getSwidgeStatus(id)`:
+`swidge()` returns `id` as the source transaction hash for same-chain swaps, and as `fromChain:toChain:hash` for cross-chain bridges. `getSwidgeStatus(id)` reads the source transaction through the account's provider (the account must be on the source chain) and maps it to the WDK `SwidgeStatus` values:
 
-- reads the source transaction receipt through the account's provider (the account must be on the source chain)
-- throws `NoSuchElementError` when no transaction exists for the id
-- same-chain swaps: `pending` → `completed` / `failed`
-- cross-chain bridges: reports `pending` after the source transaction succeeds — destination settlement is executed by the routed bridge provider (typically within the quote's `estimatedDuration`) and is not yet tracked by the Zerion API
+| WDK status | Emitted when | Notes |
+|------------|--------------|-------|
+| `pending` | The source transaction is known but not yet mined, **or** a cross-chain source transaction succeeded | Destination settlement is executed by the routed bridge provider (typically within the quote's `estimatedDuration`) and is not yet tracked by the Zerion API |
+| `completed` | A same-chain swap's transaction succeeded | |
+| `failed` | The source transaction reverted | |
+| `action-required` | never | Approvals are executed by the module, no user action is pending |
+| `refund-pending`, `refunded` | never | Bridge refunds go to the sending wallet and are not exposed by the Zerion API yet |
+| `cancelled`, `expired` | never | Quotes are executed immediately; there is no order book |
+| `partial` | never | Routes fill atomically |
+
+Unknown or malformed ids throw `ValueError`; an id whose transaction does not exist throws `NoSuchElementError`.
+
+#### Fee mapping
+
+Quotes and results carry an itemised `fees` array. Each Zerion fee block maps to a WDK `SwidgeFee` type, and the legacy `swap` / `bridge` methods aggregate them as follows:
+
+| Zerion field | `SwidgeFee.type` | `SwidgeFee.token` | `included` | Legacy `swap`/`quoteSwap` | Legacy `bridge`/`quoteBridge` |
+|--------------|------------------|-------------------|------------|---------------------------|-------------------------------|
+| Wallet estimate (`account.quoteSendTransaction`) and, after execution, the fee actually paid | `network` | Source-chain native token | `false` | summed into `fee` | `fee` |
+| `protocol_fee` (Zerion) | `protocol` | The fee's `fungible` | `included_in_rate` | summed into `fee` | `bridgeFee` |
+| `bridge_fee` (routed bridge provider) | `protocol` | The fee's `fungible` | `included_in_rate` | summed into `fee` | `bridgeFee` |
+| — | `affiliate`, `other` | | | not emitted | not emitted |
+
+Fee amounts are in base units of `SwidgeFee.token`. Zero fees reported by the API without a denomination (e.g. a waived protocol fee) are omitted. `maxNetworkFeeBps` applies to the `network` fee, `maxProtocolFeeBps` to the sum of `protocol` fees, both expressed in basis points of the input amount's fiat value; a cap fails closed (`MaximumFeeExceededError`) when the quote lacks the fiat data needed to verify it.
 
 #### Approvals
 
@@ -227,7 +271,19 @@ Through the legacy `swap()` / `bridge()` interfaces, a `ZerionQuoteError` surfac
 
 All EVM chains where Zerion supports trading (Ethereum, Base, Arbitrum, Optimism, Polygon, BNB Chain, Avalanche, and more — see `getSupportedChains()`), with bridging between them. Solana is currently supported as a bridge **destination**; Solana-native accounts are not yet supported as a source.
 
+**Testnets**: the Zerion swap API serves mainnets only and has no testnet mode. For integration testing, quote freely (quotes are read-only and never move funds) and execute small amounts on a low-fee chain such as Base.
+
 ## 🔒 Security Considerations
+
+Vulnerabilities: please follow the process in [SECURITY.md](SECURITY.md) (private report to security@zerion.io).
+
+### Data flow and telemetry
+
+- **What leaves the device**: quote requests to `api.zerion.io` contain the wallet address, the recipient, the token identifiers, the input amount and the slippage, authenticated with your API key. Chain and token discovery requests contain only chain ids and token identifiers.
+- **What never leaves the device**: seed phrases, private keys and signatures. Transactions returned by the API are validated, then signed and broadcast by the WDK wallet account through the RPC provider you configured — the module never talks to a node itself.
+- **Telemetry**: the module collects no analytics and sends no data anywhere other than the Zerion API. API usage is visible to Zerion under your API key, as with any Zerion API integration.
+
+### Recommendations
 
 - **Seed phrase security**: keep your seed phrase safe and never share it
 - **API key**: treat your Zerion API key as a secret; do not ship it in client-side code you don't control
@@ -249,11 +305,22 @@ npm run lint
 
 # Build TypeScript definitions
 npm run build:types
+
+# Coverage report
+npm run test:coverage
+```
+
+### Example
+
+[`examples/quote.js`](examples/quote.js) quotes a same-chain swap and a cross-chain bridge as a read-only wallet:
+
+```bash
+ZERION_API_KEY=... node examples/quote.js
 ```
 
 ### Interactive demo
 
-Put `ZERION_API_KEY=...` in a `.env` file in the repo root (gitignored), then:
+Copy `.env.example` to `.env` and fill in `ZERION_API_KEY` (the file is gitignored), then:
 
 ```bash
 # Read-only quote as any wallet — no keys, nothing signed.

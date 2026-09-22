@@ -83,5 +83,12 @@
       "bare.js",
       "tests/**/*.js"
     ]
+  },
+  "jest": {
+    "coverageProvider": "v8",
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "index.js"
+    ]
   }
 }
