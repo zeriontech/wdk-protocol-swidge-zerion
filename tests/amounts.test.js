@@ -47,5 +47,10 @@ describe('amounts', () => {
       expect(() => fromBaseUnits(Number.MAX_SAFE_INTEGER + 1, 18)).toThrow('safe integers')
       expect(() => fromBaseUnits(1.5, 18)).toThrow('safe integers')
     })
+
+    test('should reject non-numeric amounts', () => {
+      expect(() => fromBaseUnits('1', 18)).toThrow('safe integer or bigint')
+      expect(() => fromBaseUnits(undefined, 18)).toThrow('safe integer or bigint')
+    })
   })
 })

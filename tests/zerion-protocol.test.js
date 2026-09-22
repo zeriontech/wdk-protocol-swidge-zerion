@@ -1003,6 +1003,135 @@ describe('ZerionProtocol', () => {
       })
     })
 
+    describe('hardening', () => {
+      test.each(['0xzz', 1.5])('should reject the invalid chain reference %s', async (toChain) => {
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, toChain }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain('Invalid chain reference')
+      })
+
+      test('should denominate the network fee in the native token when the api omits it', async () => {
+        const quote = makeQuote()
+        delete quote.attributes.network_fee.fungible
+        quotesResponse = { data: [quote] }
+
+        const result = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(result.fees[0]).toEqual(DUMMY_NETWORK_FEE)
+      })
+
+      test('should reject an invalid wallet fee quote', async () => {
+        account.quoteSendTransaction.mockResolvedValue({ fee: 'abc' })
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('ESTIMATION_FAILED')
+        expect(error.message).toContain('invalid network-fee quote')
+      })
+
+      test('should fail closed when the network fee conversion overflows', async () => {
+        account.quoteSendTransaction.mockResolvedValue({ fee: 2n ** 1100n })
+        protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('provider fee conversion data')
+      })
+
+      test('should treat oversized bigint fee caps as unlimited', async () => {
+        protocol = createProtocol(account, { maxNetworkFeeBps: 2n ** 64n, maxProtocolFeeBps: 2n ** 64n })
+
+        const result = await protocol.swidge(sameChainOptions)
+
+        expect(result.hash).toBe(DUMMY_SWAP_HASH)
+      })
+
+      test('should reject non-string token references', async () => {
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, fromToken: 123 }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain('Invalid token reference')
+      })
+
+      test.each([
+        ['abc', 'invalid swap transaction value'],
+        ['-1', 'negative swap transaction value']
+      ])('should reject an executable transaction whose value is %s', async (value, message) => {
+        const quote = makeQuote()
+        quote.attributes.transaction_swap.evm.value = value
+        quotesResponse = { data: [quote] }
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error.message).toContain(message)
+      })
+
+      test('should reject an approval when the input token is native', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+
+        const error = await rejectionOf(protocol.swidge({ ...sameChainOptions, fromToken: 'eth' }))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error.message).toContain('expected input token')
+        expect(account.sendTransaction).not.toHaveBeenCalled()
+      })
+
+      test('should fail closed when the provider reports a zero network fee for a non-zero wallet estimate', async () => {
+        const quote = makeQuote()
+        quote.attributes.network_fee.amount.quantity = '0'
+        quotesResponse = { data: [quote] }
+        protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('zero provider network-fee estimate')
+      })
+
+      test('should accept a zero network fee when the wallet estimate is also zero', async () => {
+        const quote = makeQuote()
+        quote.attributes.network_fee.amount.quantity = '0'
+        quotesResponse = { data: [quote] }
+        account.quoteSendTransaction.mockResolvedValue({ fee: 0n })
+        protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        const result = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(result.fees[0].amount).toBe(0n)
+      })
+
+      test('should fail closed when the reported network fee amount is invalid', async () => {
+        const quote = makeQuote()
+        quote.attributes.network_fee.amount.quantity = 'abc'
+        quotesResponse = { data: [quote] }
+        protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(MaximumFeeExceededError)
+        expect(error.message).toContain('network-fee amount is invalid')
+        expect(error.cause).toBeInstanceOf(ValueError)
+      })
+
+      test('should include bridge fees in the protocol fee cap', async () => {
+        quotesResponse = { data: [makeQuote({ bridgeFee: true, outputChain: 'base' })] }
+        protocol = createProtocol(account, { maxProtocolFeeBps: 100 })
+
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, toToken: 'token-out-id', toChain: 'base' }))
+
+        expect(error).toBeInstanceOf(MaximumFeeExceededError)
+        expect(error.message).toContain('protocol and bridge fees')
+      })
+
+      test('should fail closed when a bridge fee has no fiat value', async () => {
+        const quote = makeQuote({ bridgeFee: true, outputChain: 'base' })
+        delete quote.attributes.bridge_fee.amount.usd_value
+        quotesResponse = { data: [quote] }
+        protocol = createProtocol(account, { maxProtocolFeeBps: 10_000 })
+
+        await expect(protocol.quoteSwidge({ ...sameChainOptions, toToken: 'token-out-id', toChain: 'base' }))
+          .rejects.toThrow('bridge fee has no valid USD value')
+      })
+    })
+
     describe('getSupportedTokens', () => {
       test('should default to the account chain when no filter is given', async () => {
         const tokens = await protocol.getSupportedTokens()
@@ -1066,6 +1195,12 @@ describe('ZerionProtocol', () => {
 
       expect(account.quoteSendTransaction).toHaveBeenCalledWith([DUMMY_APPROVE_TRANSACTION, DUMMY_SWAP_TRANSACTION], undefined)
       expect(quote.fees[0]).toEqual(DUMMY_NETWORK_FEE)
+    })
+
+    test('should default token discovery to the configured chain', async () => {
+      const tokens = await protocol.getSupportedTokens()
+
+      expect(tokens.map(token => token.chain)).toEqual(['ethereum', 'ethereum'])
     })
 
     test('should resolve status through the erc-4337 account', async () => {
@@ -1182,6 +1317,17 @@ describe('ZerionProtocol', () => {
 
     test('should reject unknown chain filters', async () => {
       await expect(protocol.getSupportedTokens({ fromChain: 'unknownchain' })).rejects.toThrow(ValueError)
+    })
+
+    test('should retry chain discovery after an api failure', async () => {
+      protocol = createProtocol(undefined, { maxRetries: 0 })
+      fetchMock.mockResolvedValueOnce(jsonResponse({ errors: [{ title: 'internal', detail: 'boom' }] }, 500))
+
+      await expect(protocol.getSupportedChains()).rejects.toThrow(ZerionApiError)
+
+      const chains = await protocol.getSupportedChains()
+
+      expect(chains).toHaveLength(3)
     })
 
     test('should propagate api failures while listing chains', async () => {
