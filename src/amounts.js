@@ -14,7 +14,7 @@
 
 'use strict'
 
-import { ZerionError } from './errors.js'
+import { ValueError } from '@tetherto/wdk-wallet/protocols'
 
 const DECIMAL_PATTERN = /^(\d+)?(?:\.(\d+))?$/
 
@@ -28,13 +28,13 @@ const DECIMAL_PATTERN = /^(\d+)?(?:\.(\d+))?$/
  */
 export function toBaseUnits (quantity, decimals) {
   if (typeof quantity !== 'string' || quantity.length === 0) {
-    throw new ZerionError('invalid_amount', `Invalid decimal amount: '${quantity}'.`)
+    throw new ValueError(`Invalid decimal amount: '${quantity}'.`)
   }
 
   const match = quantity.match(DECIMAL_PATTERN)
 
   if (!match || (match[1] === undefined && match[2] === undefined)) {
-    throw new ZerionError('invalid_amount', `Invalid decimal amount: '${quantity}'.`)
+    throw new ValueError(`Invalid decimal amount: '${quantity}'.`)
   }
 
   const integer = match[1] ?? '0'
@@ -52,17 +52,17 @@ export function toBaseUnits (quantity, decimals) {
  */
 export function fromBaseUnits (amount, decimals) {
   if (typeof amount === 'number' && !Number.isSafeInteger(amount)) {
-    throw new ZerionError('invalid_amount', 'Numeric amounts must be safe integers; use bigint for larger values.')
+    throw new ValueError('Numeric amounts must be safe integers; use bigint for larger values.')
   }
 
   if (typeof amount !== 'number' && typeof amount !== 'bigint') {
-    throw new ZerionError('invalid_amount', 'Amounts must be provided as a safe integer or bigint.')
+    throw new ValueError('Amounts must be provided as a safe integer or bigint.')
   }
 
   const value = BigInt(amount)
 
   if (value < 0n) {
-    throw new ZerionError('invalid_amount', 'Amounts must be positive.')
+    throw new ValueError('Amounts must be positive.')
   }
 
   if (decimals === 0) return value.toString()

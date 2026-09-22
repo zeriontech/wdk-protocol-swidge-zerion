@@ -14,7 +14,9 @@
 
 'use strict'
 
-import { ZerionApiError, ZerionError } from './errors.js'
+import { ValueError } from '@tetherto/wdk-wallet/protocols'
+
+import { ZerionApiError } from './errors.js'
 
 const DEFAULT_BASE_URL = 'https://api.zerion.io'
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -104,7 +106,7 @@ export class ZerionApiClient {
    */
   constructor (config = /** @type {ZerionApiClientConfig} */ ({})) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
-      throw new ZerionError('missing_api_key', "A Zerion API key is required (config.apiKey). Get one at 'https://dashboard.zerion.io'.")
+      throw new ValueError("A Zerion API key is required (config.apiKey). Get one at 'https://dashboard.zerion.io'.")
     }
 
     /** @private */
@@ -126,7 +128,7 @@ export class ZerionApiClient {
     this._retryDelayMs = config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
 
     if (typeof this._fetch !== 'function') {
-      throw new ZerionError('missing_fetch', 'A fetch implementation is required.')
+      throw new ValueError('A fetch implementation is required.')
     }
   }
 

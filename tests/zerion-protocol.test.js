@@ -4,34 +4,62 @@ import { WalletAccountEvm, WalletAccountReadOnlyEvm } from '@tetherto/wdk-wallet
 
 import { WalletAccountEvmErc4337 } from '@tetherto/wdk-wallet-evm-erc-4337'
 
-const SEED = 'cook voyage document eight skate token alien guide drink uncle term abuse'
+import {
+  AccountRequiredError,
+  BridgeError,
+  InvalidTokenError,
+  MaximumFeeExceededError,
+  NoSuchElementError,
+  ProviderError,
+  ProviderRequiredError,
+  ReadOnlyAccountRequiredError,
+  SwapError,
+  SwidgeError,
+  SwidgeErrorReason,
+  ValueError
+} from '@tetherto/wdk-wallet/protocols'
 
-const USER_ADDRESS = '0xa460AEbce0d3A4BecAd8ccf9D6D4861296c503Bd'
+import ZerionProtocol, { ZerionApiError, ZerionQuoteError } from '../index.js'
 
-const TOKEN_IN = '0x9e6b38E072f624fdC4Fbaf7bB12a7D9e657435ce'
-const TOKEN_OUT = '0x73091d62F1F11DCb172530126E9630e327770e05'
-const BRIDGE_TOKEN_SOURCE = '0x' + '11'.repeat(20)
-const BRIDGE_TOKEN_DESTINATION = '0x' + '22'.repeat(20)
-const ROUTER = '0xf90e98F3D8Dce44632E5020ABF2E122E0f99DFAb'
+const DUMMY_SEED = 'cook voyage document eight skate token alien guide drink uncle term abuse'
+const DUMMY_RPC_URL = 'https://mock-rpc-url.com'
 
-const SWAP_HASH = '0x' + 'ab'.repeat(32)
-const APPROVE_DATA = `0x095ea7b3${ROUTER.slice(2).toLowerCase().padStart(64, '0')}${(10n ** 18n).toString(16).padStart(64, '0')}`
+const DUMMY_USER_ADDRESS = '0xa460AEbce0d3A4BecAd8ccf9D6D4861296c503Bd'
 
-const getNetworkMock = jest.fn()
-const getTransactionReceiptMock = jest.fn()
+const DUMMY_TOKEN_IN = '0x9e6b38E072f624fdC4Fbaf7bB12a7D9e657435ce'
+const DUMMY_TOKEN_OUT = '0x73091d62F1F11DCb172530126E9630e327770e05'
+const DUMMY_TOKEN_OUT_BASE_ADDRESS = '0x' + '44'.repeat(20)
+const DUMMY_BRIDGE_TOKEN_SOURCE = '0x' + '11'.repeat(20)
+const DUMMY_BRIDGE_TOKEN_DESTINATION = '0x' + '22'.repeat(20)
+const DUMMY_UNKNOWN_TOKEN = '0x' + '33'.repeat(20)
+const DUMMY_ROUTER = '0xf90e98F3D8Dce44632E5020ABF2E122E0f99DFAb'
 
-const { default: ZerionProtocol, ZerionApiError, ZerionAllowanceError, ZerionCapabilityError, ZerionQuoteError } = await import('../index.js')
+const DUMMY_SWAP_HASH = '0x' + 'ab'.repeat(32)
+const DUMMY_APPROVE_HASH = '0x' + 'cd'.repeat(32)
 
-const CHAINS_RESPONSE = {
-  data: [
-    { type: 'chains', id: 'ethereum', attributes: { external_id: '0x1', name: 'Ethereum', flags: { supports_trading: true, supports_bridge: true } } },
-    { type: 'chains', id: 'base', attributes: { external_id: '0x2105', name: 'Base', flags: { supports_trading: true, supports_bridge: true } } },
-    { type: 'chains', id: 'solana', attributes: { external_id: 'solana', name: 'Solana', flags: { supports_trading: true, supports_bridge: true } } },
-    { type: 'chains', id: 'aurora', attributes: { external_id: '0x4e454152', name: 'Aurora', flags: { supports_trading: false, supports_bridge: false } } }
-  ]
-}
+const encodeApprove = (spender, allowance) =>
+  `0x095ea7b3${spender.slice(2).toLowerCase().padStart(64, '0')}${allowance.toString(16).padStart(64, '0')}`
 
-const ETH_FUNGIBLE = {
+const DUMMY_APPROVE_DATA = encodeApprove(DUMMY_ROUTER, 10n ** 18n)
+
+// Production shape of a waived protocol fee: no denomination, no fiat value.
+const DUMMY_ZERO_PROTOCOL_FEE = { amount: { quantity: '0' }, base_percentage: 0.2, percentage: 0, included_in_rate: false }
+
+const DUMMY_QUOTE_ERROR = { code: 'not_enough_input_asset_balance', hint: 'topup', message: 'Not enough balance' }
+
+const DUMMY_CHAINS = [
+  { type: 'chains', id: 'ethereum', attributes: { external_id: '0x1', name: 'Ethereum', flags: { supports_trading: true, supports_bridge: true } } },
+  { type: 'chains', id: 'base', attributes: { external_id: '0x2105', name: 'Base', flags: { supports_trading: true, supports_bridge: true } } },
+  { type: 'chains', id: 'solana', attributes: { external_id: 'solana', name: 'Solana', flags: { supports_trading: true, supports_bridge: true } } },
+  { type: 'chains', id: 'aurora', attributes: { external_id: '0x4e454152', name: 'Aurora', flags: { supports_trading: false, supports_bridge: false } } }
+]
+
+// Trading chains without a hard-coded native symbol: the first one has a native
+// asset known to the (mocked) api, the second one does not.
+const DUMMY_UNMAPPED_CHAIN = { type: 'chains', id: 'dummychain', attributes: { external_id: '0x539', name: 'Dummy Chain', flags: { supports_trading: true, supports_bridge: false } } }
+const DUMMY_GHOST_CHAIN = { type: 'chains', id: 'ghostchain', attributes: { external_id: '0x53a', name: 'Ghost Chain', flags: { supports_trading: true, supports_bridge: false } } }
+
+const DUMMY_ETH_FUNGIBLE = {
   type: 'fungibles',
   id: 'eth',
   attributes: {
@@ -44,59 +72,77 @@ const ETH_FUNGIBLE = {
   }
 }
 
-const TOKEN_IN_FUNGIBLE = {
+const DUMMY_NATIVE_FUNGIBLE = {
+  type: 'fungibles',
+  id: 'dummy-native',
+  attributes: {
+    symbol: 'DMY',
+    name: 'Dummy Native',
+    implementations: [{ chain_id: 'dummychain', address: null, decimals: 18 }]
+  }
+}
+
+const DUMMY_TOKEN_IN_FUNGIBLE = {
   type: 'fungibles',
   id: 'token-in-id',
   attributes: {
     symbol: 'TIN',
     name: 'Token In',
-    implementations: [{ chain_id: 'ethereum', address: TOKEN_IN.toLowerCase(), decimals: 18 }]
+    implementations: [{ chain_id: 'ethereum', address: DUMMY_TOKEN_IN.toLowerCase(), decimals: 18 }]
   }
 }
 
-const TOKEN_OUT_FUNGIBLE = {
+const DUMMY_TOKEN_OUT_FUNGIBLE = {
   type: 'fungibles',
   id: 'token-out-id',
   attributes: {
     symbol: 'TOUT',
     name: 'Token Out',
     implementations: [
-      { chain_id: 'ethereum', address: TOKEN_OUT.toLowerCase(), decimals: 6 },
-      { chain_id: 'base', address: '0x' + '11'.repeat(20), decimals: 6 }
+      { chain_id: 'ethereum', address: DUMMY_TOKEN_OUT.toLowerCase(), decimals: 6 },
+      { chain_id: 'base', address: DUMMY_TOKEN_OUT_BASE_ADDRESS, decimals: 6 }
     ]
   }
 }
 
-const BRIDGE_TOKEN_FUNGIBLE = {
+const DUMMY_BRIDGE_TOKEN_FUNGIBLE = {
   type: 'fungibles',
   id: 'asset-uuid',
   attributes: {
     symbol: 'BRG',
     name: 'Bridge Token',
     implementations: [
-      { chain_id: 'ethereum', address: BRIDGE_TOKEN_SOURCE, decimals: 18 },
-      { chain_id: 'base', address: BRIDGE_TOKEN_DESTINATION, decimals: 18 }
+      { chain_id: 'ethereum', address: DUMMY_BRIDGE_TOKEN_SOURCE, decimals: 18 },
+      { chain_id: 'base', address: DUMMY_BRIDGE_TOKEN_DESTINATION, decimals: 18 }
     ]
   }
 }
 
-const BY_IMPLEMENTATION = {
-  ethereum: ETH_FUNGIBLE,
-  [`ethereum:${TOKEN_IN.toLowerCase()}`]: TOKEN_IN_FUNGIBLE,
-  [`ethereum:${TOKEN_OUT.toLowerCase()}`]: TOKEN_OUT_FUNGIBLE,
-  [`ethereum:${BRIDGE_TOKEN_SOURCE}`]: BRIDGE_TOKEN_FUNGIBLE
+const DUMMY_BY_IMPLEMENTATION = {
+  ethereum: DUMMY_ETH_FUNGIBLE,
+  dummychain: DUMMY_NATIVE_FUNGIBLE,
+  [`ethereum:${DUMMY_TOKEN_IN.toLowerCase()}`]: DUMMY_TOKEN_IN_FUNGIBLE,
+  [`ethereum:${DUMMY_TOKEN_OUT.toLowerCase()}`]: DUMMY_TOKEN_OUT_FUNGIBLE,
+  [`ethereum:${DUMMY_BRIDGE_TOKEN_SOURCE}`]: DUMMY_BRIDGE_TOKEN_FUNGIBLE
 }
 
-const FUNGIBLES_BY_ID = {
-  eth: ETH_FUNGIBLE,
-  'asset-uuid': BRIDGE_TOKEN_FUNGIBLE,
-  'token-out-id': TOKEN_OUT_FUNGIBLE,
-  [TOKEN_OUT.toLowerCase()]: TOKEN_OUT_FUNGIBLE
+const DUMMY_FUNGIBLES_BY_ID = {
+  eth: DUMMY_ETH_FUNGIBLE,
+  'asset-uuid': DUMMY_BRIDGE_TOKEN_FUNGIBLE,
+  'token-in-id': DUMMY_TOKEN_IN_FUNGIBLE,
+  'token-out-id': DUMMY_TOKEN_OUT_FUNGIBLE,
+  [DUMMY_TOKEN_OUT.toLowerCase()]: DUMMY_TOKEN_OUT_FUNGIBLE
 }
 
-const SWAP_FUNGIBLES_RESPONSE = {
-  data: [ETH_FUNGIBLE, TOKEN_OUT_FUNGIBLE]
+const DUMMY_FUNGIBLES_LIST = {
+  data: [DUMMY_ETH_FUNGIBLE, DUMMY_TOKEN_OUT_FUNGIBLE]
 }
+
+const DUMMY_SWAP_TRANSACTION = { to: DUMMY_ROUTER, value: 1_000n, data: '0x1234' }
+const DUMMY_APPROVE_TRANSACTION = { to: DUMMY_TOKEN_IN.toLowerCase(), value: 0n, data: DUMMY_APPROVE_DATA }
+
+const DUMMY_NETWORK_FEE = { type: 'network', amount: 10n ** 15n, token: 'eth', chain: 'ethereum', included: false, description: 'Network (gas) fee' }
+const DUMMY_PROTOCOL_FEE = { type: 'protocol', amount: 20_000_000n, token: 'token-out-id', chain: 'ethereum', included: true, description: 'Zerion protocol fee (0.8%)' }
 
 function makeQuote ({ approve = false, bridgeFee = false, error = null, executable = true, outputChain = 'ethereum' } = {}) {
   return {
@@ -137,8 +183,8 @@ function makeQuote ({ approve = false, bridgeFee = false, error = null, executab
             transaction_swap: {
               evm: {
                 type: '0x2',
-                from: USER_ADDRESS,
-                to: ROUTER,
+                from: DUMMY_USER_ADDRESS,
+                to: DUMMY_ROUTER,
                 nonce: '5',
                 chain_id: '0x1',
                 gas: '210000',
@@ -153,13 +199,13 @@ function makeQuote ({ approve = false, bridgeFee = false, error = null, executab
             transaction_approve: {
               evm: {
                 type: '0x2',
-                from: USER_ADDRESS,
-                to: TOKEN_IN.toLowerCase(),
+                from: DUMMY_USER_ADDRESS,
+                to: DUMMY_TOKEN_IN.toLowerCase(),
                 nonce: '5',
                 chain_id: '0x1',
                 gas: '60000',
                 value: '0',
-                data: APPROVE_DATA
+                data: DUMMY_APPROVE_DATA
               }
             }
           }
@@ -181,48 +227,67 @@ function jsonResponse (payload, status = 200) {
   }
 }
 
+async function rejectionOf (promise) {
+  try {
+    await promise
+  } catch (err) {
+    return err
+  }
+
+  throw new Error('Expected the promise to reject.')
+}
+
 describe('ZerionProtocol', () => {
   let account,
       protocol,
       fetchMock,
+      chainsResponse,
       quotesResponse,
       quotesRequests
 
+  const getNetworkMock = jest.fn()
+  const getTransactionReceiptMock = jest.fn()
+  const getTransactionMock = jest.fn()
+
   const createProtocol = (acc, config = {}) => new ZerionProtocol(acc, { apiKey: 'zk_test_key', fetch: fetchMock, ...config })
 
-  beforeEach(() => {
-    getNetworkMock.mockResolvedValue({ chainId: 1n })
-    getTransactionReceiptMock.mockReset()
+  const sameChainOptions = { fromToken: DUMMY_TOKEN_IN, toToken: DUMMY_TOKEN_OUT, fromTokenAmount: 10n ** 18n }
 
+  beforeEach(() => {
+    getNetworkMock.mockReset().mockResolvedValue({ chainId: 1n })
+    getTransactionReceiptMock.mockReset()
+    getTransactionMock.mockReset().mockResolvedValue({ hash: DUMMY_SWAP_HASH })
+
+    chainsResponse = { data: DUMMY_CHAINS }
     quotesResponse = { data: [makeQuote()] }
     quotesRequests = []
 
     fetchMock = jest.fn(async (url) => {
       const parsed = new URL(url)
 
-      if (parsed.pathname === '/v1/chains/') return jsonResponse(CHAINS_RESPONSE)
+      if (parsed.pathname === '/v1/chains/') return jsonResponse(chainsResponse)
 
       if (parsed.pathname === '/v1/swap/quotes/') {
         quotesRequests.push(parsed)
         return jsonResponse(quotesResponse)
       }
 
-      if (parsed.pathname === '/v1/swap/fungibles/') return jsonResponse(SWAP_FUNGIBLES_RESPONSE)
+      if (parsed.pathname === '/v1/swap/fungibles/') return jsonResponse(DUMMY_FUNGIBLES_LIST)
 
       if (parsed.pathname === '/v1/fungibles/by-implementation') {
         const implementation = parsed.searchParams.get('implementation')
-        const fungible = BY_IMPLEMENTATION[implementation]
+        const fungible = DUMMY_BY_IMPLEMENTATION[implementation]
 
         if (!fungible) return jsonResponse({ errors: [{ title: 'not_found', detail: 'Fungible not found' }] }, 404)
 
         return jsonResponse({ data: fungible })
       }
 
-      if (parsed.pathname === '/v1/fungibles/') return jsonResponse(SWAP_FUNGIBLES_RESPONSE)
+      if (parsed.pathname === '/v1/fungibles/') return jsonResponse(DUMMY_FUNGIBLES_LIST)
 
       if (parsed.pathname.startsWith('/v1/fungibles/')) {
         const id = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop())
-        const fungible = FUNGIBLES_BY_ID[id]
+        const fungible = DUMMY_FUNGIBLES_BY_ID[id]
 
         if (!fungible) return jsonResponse({ errors: [{ title: 'not_found', detail: 'Fungible not found' }] }, 404)
 
@@ -235,50 +300,80 @@ describe('ZerionProtocol', () => {
 
   describe('with WalletAccountEvm', () => {
     beforeEach(() => {
-      account = new WalletAccountEvm(SEED, "0'/0/0", { provider: 'https://mock-rpc-url.com' })
+      account = new WalletAccountEvm(DUMMY_SEED, "0'/0/0", { provider: DUMMY_RPC_URL })
 
       account._provider = { getNetwork: getNetworkMock }
-      account.getAddress = jest.fn().mockResolvedValue(USER_ADDRESS)
+      account.getAddress = jest.fn().mockResolvedValue(DUMMY_USER_ADDRESS)
       account.getTransactionReceipt = getTransactionReceiptMock
+      account.getTransaction = getTransactionMock
       account.quoteSendTransaction = jest.fn().mockResolvedValue({ fee: 10n ** 15n })
-      account.sendTransaction = jest.fn().mockResolvedValue({ hash: SWAP_HASH, fee: 12_345n })
+      account.sendTransaction = jest.fn().mockResolvedValue({ hash: DUMMY_SWAP_HASH, fee: 12_345n })
 
       protocol = createProtocol(account)
     })
 
     describe('quoteSwidge', () => {
       test('should quote a same-chain swap', async () => {
-        const quote = await protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n
+        const quote = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(quote).toEqual({
+          fromTokenAmount: 10n ** 18n,
+          toTokenAmount: 2_500_000_000n,
+          toTokenAmountMin: 2_475_000_000n,
+          fees: [DUMMY_NETWORK_FEE, DUMMY_PROTOCOL_FEE],
+          estimatedDuration: 30
         })
-
-        expect(quote.fromTokenAmount).toBe(10n ** 18n)
-        expect(quote.toTokenAmount).toBe(2_500_000_000n)
-        expect(quote.toTokenAmountMin).toBe(2_475_000_000n)
-        expect(quote.estimatedDuration).toBe(30)
-
-        expect(quote.fees).toEqual([
-          { type: 'network', amount: 10n ** 15n, token: 'eth', chain: 'ethereum', included: false, description: 'Network (gas) fee' },
-          { type: 'protocol', amount: 20_000_000n, token: 'token-out-id', chain: 'ethereum', included: true, description: 'Zerion protocol fee (0.8%)' }
-        ])
 
         const request = quotesRequests[0]
 
-        expect(request.searchParams.get('from')).toBe(USER_ADDRESS)
-        expect(request.searchParams.get('to')).toBe(USER_ADDRESS)
+        expect(request.searchParams.get('from')).toBe(DUMMY_USER_ADDRESS)
+        expect(request.searchParams.get('to')).toBe(DUMMY_USER_ADDRESS)
         expect(request.searchParams.get('input[chain_id]')).toBe('ethereum')
         expect(request.searchParams.get('input[fungible_id]')).toBe('token-in-id')
         expect(request.searchParams.get('input[amount]')).toBe('1')
         expect(request.searchParams.get('output[chain_id]')).toBe('ethereum')
         expect(request.searchParams.get('output[fungible_id]')).toBe('token-out-id')
         expect(request.searchParams.get('slippage_percent')).toBeNull()
-        expect(account.quoteSendTransaction).toHaveBeenCalledWith({
-          to: ROUTER,
-          value: 1_000n,
-          data: '0x1234'
-        }, undefined)
+        expect(account.quoteSendTransaction).toHaveBeenCalledWith(DUMMY_SWAP_TRANSACTION, undefined)
+      })
+
+      test('should quote the approval through the wallet when the input token is not approved', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+
+        const quote = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(account.quoteSendTransaction).toHaveBeenCalledTimes(1)
+        expect(account.quoteSendTransaction).toHaveBeenCalledWith(DUMMY_APPROVE_TRANSACTION, undefined)
+        expect(quote.fees[0]).toEqual({ ...DUMMY_NETWORK_FEE, amount: 2n * 10n ** 15n })
+      })
+
+      test('should omit a waived protocol fee reported without a denomination', async () => {
+        const quote = makeQuote()
+        quote.attributes.protocol_fee = DUMMY_ZERO_PROTOCOL_FEE
+        quotesResponse = { data: [quote] }
+        protocol = createProtocol(account, { maxProtocolFeeBps: 1 })
+
+        const result = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(result.fees).toEqual([DUMMY_NETWORK_FEE])
+      })
+
+      test('should keep a zero fee that carries a denomination', async () => {
+        const quote = makeQuote()
+        quote.attributes.protocol_fee.amount = { quantity: '0', usd_value: 0 }
+        quotesResponse = { data: [quote] }
+
+        const result = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(result.fees[1]).toEqual({ ...DUMMY_PROTOCOL_FEE, amount: 0n })
+      })
+
+      test('should select the first executable quote', async () => {
+        quotesResponse = { data: [makeQuote({ executable: false, error: DUMMY_QUOTE_ERROR }), makeQuote()] }
+
+        const quote = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(quote.toTokenAmount).toBe(2_500_000_000n)
       })
 
       test.each(['output_amount', 'minimum_output_amount'])('should reject executable quotes missing %s', async (field) => {
@@ -286,8 +381,12 @@ describe('ZerionProtocol', () => {
         delete quote.attributes[field]
         quotesResponse = { data: [quote] }
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow(ZerionQuoteError)
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.code).toBe('invalid_response')
+        expect(error.reason).toBe('invalid_response')
       })
 
       test('should reject invalid executable output amounts', async () => {
@@ -295,8 +394,15 @@ describe('ZerionProtocol', () => {
         quote.attributes.minimum_output_amount.quantity = 'not-a-number'
         quotesResponse = { data: [quote] }
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('invalid output amount')
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('invalid output amount')
+      })
+
+      test('should reject inconsistent executable output amounts', async () => {
+        const quote = makeQuote()
+        quote.attributes.minimum_output_amount.quantity = '9999'
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('inconsistent output amounts')
       })
 
       test.each([429, 503])('should propagate fee-token lookup failures with status %s', async (status) => {
@@ -306,21 +412,23 @@ describe('ZerionProtocol', () => {
 
         jest.spyOn(protocol._client, 'getFungible').mockRejectedValue(new ZerionApiError('api_error', 'Try again', status))
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toMatchObject({ status })
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toMatchObject({ status })
       })
 
       test.each([
-        ['from', ROUTER, 'different sender'],
+        ['from', DUMMY_ROUTER, 'different sender'],
         ['chain_id', '0x2105', 'different chain'],
-        ['to', 'invalid-target', 'invalid swap transaction target']
+        ['to', 'invalid-target', 'invalid swap transaction target'],
+        ['data', 'not-hex', 'invalid swap transaction data']
       ])('should reject an executable transaction with invalid %s', async (field, value, message) => {
         const quote = makeQuote()
         quote.attributes.transaction_swap.evm[field] = value
         quotesResponse = { data: [quote] }
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow(message)
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error.message).toContain(message)
       })
 
       test('should reject a reported fee after deterministic lookup misses', async () => {
@@ -330,12 +438,19 @@ describe('ZerionProtocol', () => {
 
         jest.spyOn(protocol._client, 'getFungible').mockRejectedValue(new ZerionApiError('not_found', 'Missing', 404))
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('fee token')
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('fee token')
+      })
+
+      test('should reject a reported fee without a fungible denomination', async () => {
+        const quote = makeQuote()
+        delete quote.attributes.protocol_fee.fungible
+        quotesResponse = { data: [quote] }
+
+        await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow('missing its fungible denomination')
       })
 
       test('should send the api key as basic auth', async () => {
-        await protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n })
+        await protocol.quoteSwidge(sameChainOptions)
 
         const [, init] = fetchMock.mock.calls[0]
 
@@ -343,60 +458,97 @@ describe('ZerionProtocol', () => {
       })
 
       test('should resolve native sentinels to the chain base asset', async () => {
-        await protocol.quoteSwidge({
-          fromToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n
-        })
+        await protocol.quoteSwidge({ ...sameChainOptions, fromToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' })
 
         expect(quotesRequests[0].searchParams.get('input[fungible_id]')).toBe('eth')
       })
 
       test('should forward the slippage option in percent', async () => {
-        await protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n,
-          slippage: 0.005
-        })
+        await protocol.quoteSwidge({ ...sameChainOptions, slippage: 0.005 })
 
         expect(quotesRequests[0].searchParams.get('slippage_percent')).toBe('0.5')
       })
 
-      test('should throw on exact-out operations', async () => {
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, toTokenAmount: 1_000_000n }))
-          .rejects.toThrow(ZerionCapabilityError)
+      test('should fall back to the configured default slippage', async () => {
+        protocol = createProtocol(account, { slippagePercent: 2 })
+
+        await protocol.quoteSwidge(sameChainOptions)
+
+        expect(quotesRequests[0].searchParams.get('slippage_percent')).toBe('2')
       })
 
-      test.each([Number.MAX_SAFE_INTEGER + 1, 1.5])('should reject unsafe numeric input amounts (%s)', async (amount) => {
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: amount }))
-          .rejects.toThrow('safe integer')
+      test.each([1, -0.1, Number.NaN, '0.01'])('should reject the invalid slippage option %s', async (slippage) => {
+        await expect(protocol.quoteSwidge({ ...sameChainOptions, slippage })).rejects.toThrow(ValueError)
+      })
+
+      test('should reject exact-output operations', async () => {
+        const error = await rejectionOf(protocol.quoteSwidge({ fromToken: DUMMY_TOKEN_IN, toToken: DUMMY_TOKEN_OUT, toTokenAmount: 1_000_000n }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain('exact-input')
+      })
+
+      test.each([Number.MAX_SAFE_INTEGER + 1, 1.5, '1'])('should reject the invalid input amount %s', async (amount) => {
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, fromTokenAmount: amount }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain('safe integer')
+      })
+
+      test('should require a positive input amount', async () => {
+        await expect(protocol.quoteSwidge({ ...sameChainOptions, fromTokenAmount: 0n })).rejects.toThrow('must be positive')
+        await expect(protocol.quoteSwidge({ fromToken: DUMMY_TOKEN_IN, toToken: DUMMY_TOKEN_OUT })).rejects.toThrow("'fromTokenAmount' option is required")
+      })
+
+      test('should reject unknown tokens', async () => {
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, fromToken: DUMMY_UNKNOWN_TOKEN }))
+
+        expect(error).toBeInstanceOf(InvalidTokenError)
+        expect(error.message).toContain('not known to Zerion')
+      })
+
+      test('should reject tokens without an implementation on the destination chain', async () => {
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, toToken: 'token-in-id', toChain: 'base' }))
+
+        expect(error).toBeInstanceOf(InvalidTokenError)
+        expect(error.message).toContain("no implementation on chain ('base')")
+      })
+
+      test.each(['unknownchain', 999_999, '0xdead'])('should reject the unknown destination chain %s', async (toChain) => {
+        await expect(protocol.quoteSwidge({ ...sameChainOptions, toChain })).rejects.toThrow(ValueError)
       })
 
       test('should throw when the api rejects the request', async () => {
         fetchMock.mockResolvedValue(jsonResponse({ errors: [{ title: 'unauthenticated', detail: 'Invalid api key' }] }, 401))
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow(ZerionApiError)
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('unauthenticated')
+        expect(error.status).toBe(401)
       })
 
       test('should throw when no routes are available', async () => {
         quotesResponse = { data: [] }
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow(ZerionQuoteError)
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionQuoteError)
+        expect(error).toBeInstanceOf(SwidgeError)
+        expect(error.reason).toBe(SwidgeErrorReason.ROUTE_NOT_SUPPORTED)
       })
 
-      test('should throw when no executable quote is available', async () => {
-        quotesResponse = {
-          data: [makeQuote({
-            executable: false,
-            error: { code: 'not_enough_input_asset_balance', hint: 'topup', message: 'Not enough balance' }
-          })]
-        }
+      test('should map the api quote error to a swidge error reason', async () => {
+        quotesResponse = { data: [makeQuote({ executable: false, error: DUMMY_QUOTE_ERROR })] }
 
-        await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('Not enough balance')
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionQuoteError)
+        expect(error.message).toBe('Not enough balance')
+        expect(error.reason).toBe(SwidgeErrorReason.INSUFFICIENT_TOKEN_BALANCE)
+        expect(error.code).toBe('not_enough_input_asset_balance')
+        expect(error.hint).toBe('topup')
       })
 
       test('should reuse the account provider for failover configurations', async () => {
@@ -406,141 +558,220 @@ describe('ZerionProtocol', () => {
         account._provider = initializedProvider
         protocol = createProtocol(account)
 
-        await protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n })
+        await protocol.quoteSwidge(sameChainOptions)
 
         expect(initializedProvider.getNetwork).toHaveBeenCalledTimes(1)
+      })
+
+      test('should wrap chain detection failures as provider errors and retry on the next call', async () => {
+        getNetworkMock.mockRejectedValueOnce(new Error('rpc down'))
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('NETWORK_DETECTION_FAILED')
+        expect(error.message).toContain('rpc down')
+
+        const quote = await protocol.quoteSwidge(sameChainOptions)
+
+        expect(quote.toTokenAmount).toBe(2_500_000_000n)
+        expect(getNetworkMock).toHaveBeenCalledTimes(2)
+      })
+
+      test('should wrap wallet estimation failures as provider errors', async () => {
+        account.quoteSendTransaction.mockRejectedValue(new Error('execution reverted'))
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('ESTIMATION_FAILED')
+        expect(error.message).toContain('execution reverted')
       })
     })
 
     describe('swidge', () => {
       test('should execute a same-chain swap', async () => {
-        const result = await protocol.swidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n
-        })
+        const result = await protocol.swidge(sameChainOptions)
 
-        expect(account.sendTransaction).toHaveBeenCalledWith({
-          to: ROUTER,
-          value: 1_000n,
-          data: '0x1234'
-        })
+        expect(account.quoteSendTransaction).toHaveBeenCalledWith(DUMMY_SWAP_TRANSACTION, {})
+        expect(account.sendTransaction).toHaveBeenCalledTimes(1)
+        expect(account.sendTransaction).toHaveBeenCalledWith(DUMMY_SWAP_TRANSACTION)
 
         expect(result).toEqual({
-          id: `ethereum:ethereum:${SWAP_HASH}`,
-          hash: SWAP_HASH,
-          fees: expect.any(Array),
-          transactions: [{ hash: SWAP_HASH, chain: 'ethereum', type: 'source' }],
+          id: DUMMY_SWAP_HASH,
+          hash: DUMMY_SWAP_HASH,
+          fees: [{ ...DUMMY_NETWORK_FEE, amount: 12_345n }, DUMMY_PROTOCOL_FEE],
+          transactions: [{ hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'source' }],
           fromTokenAmount: 10n ** 18n,
           toTokenAmount: 2_500_000_000n,
           toTokenAmountMin: 2_475_000_000n
         })
       })
 
-      test('should throw an allowance error when an approval is required', async () => {
+      test('should keep the quoted network fee when the wallet does not report the paid fee', async () => {
+        account.sendTransaction.mockResolvedValue({ hash: DUMMY_SWAP_HASH })
+
+        const result = await protocol.swidge(sameChainOptions)
+
+        expect(result.fees).toEqual([DUMMY_NETWORK_FEE, DUMMY_PROTOCOL_FEE])
+      })
+
+      test('should send the approval first and wait for it to confirm', async () => {
         quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction
+          .mockResolvedValueOnce({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+          .mockResolvedValueOnce({ hash: DUMMY_SWAP_HASH, fee: 12_345n })
+        getTransactionReceiptMock
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ status: 1 })
+        protocol = createProtocol(account, { approvalPollIntervalMs: 1 })
 
-        const error = await protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n })
-          .catch(err => err)
+        const result = await protocol.swidge(sameChainOptions)
 
-        expect(error).toBeInstanceOf(ZerionAllowanceError)
-        expect(error.details.token).toBe(TOKEN_IN.toLowerCase())
-        expect(error.details.transaction).toEqual({ to: TOKEN_IN.toLowerCase(), value: 0n, data: APPROVE_DATA })
-        expect(account.sendTransaction).not.toHaveBeenCalled()
+        expect(account.sendTransaction.mock.calls).toEqual([[DUMMY_APPROVE_TRANSACTION], [DUMMY_SWAP_TRANSACTION]])
+        expect(getTransactionReceiptMock).toHaveBeenCalledTimes(2)
+        expect(getTransactionReceiptMock).toHaveBeenCalledWith(DUMMY_APPROVE_HASH)
+
+        expect(result.transactions).toEqual([
+          { hash: DUMMY_APPROVE_HASH, chain: 'ethereum', type: 'approval' },
+          { hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'source' }
+        ])
+        expect(result.fees[0]).toEqual({ ...DUMMY_NETWORK_FEE, amount: 13_345n })
+      })
+
+      test('should fail when the approval reverts', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction.mockResolvedValue({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+        getTransactionReceiptMock.mockResolvedValue({ status: 0 })
+
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('APPROVAL_REVERTED')
+        expect(account.sendTransaction).toHaveBeenCalledTimes(1)
+      })
+
+      test('should fail when the approval is not confirmed in time', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction.mockResolvedValue({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+        getTransactionReceiptMock.mockResolvedValue(null)
+        protocol = createProtocol(account, { approvalTimeoutMs: 0 })
+
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('APPROVAL_TIMEOUT')
+        expect(account.sendTransaction).toHaveBeenCalledTimes(1)
       })
 
       test('should surface the quote error when no executable quote exists', async () => {
-        quotesResponse = {
-          data: [makeQuote({
-            executable: false,
-            error: { code: 'not_enough_input_asset_balance', hint: 'topup', message: 'Not enough balance' }
-          })]
-        }
+        quotesResponse = { data: [makeQuote({ executable: false, error: DUMMY_QUOTE_ERROR })] }
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('Not enough balance')
+        await expect(protocol.swidge(sameChainOptions)).rejects.toThrow('Not enough balance')
+        expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
       test('should enforce minAmountOut', async () => {
-        await expect(protocol.swidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n,
-          minAmountOut: 3_000_000_000n
-        })).rejects.toThrow('minAmountOut')
+        const error = await rejectionOf(protocol.swidge({ ...sameChainOptions, minAmountOut: 3_000_000_000n }))
+
+        expect(error).toBeInstanceOf(ZerionQuoteError)
+        expect(error.reason).toBe(SwidgeErrorReason.COULD_NOT_MET_THRESHOLD)
+        expect(account.sendTransaction).not.toHaveBeenCalled()
+      })
+
+      test('should accept a satisfied minAmountOut', async () => {
+        const result = await protocol.swidge({ ...sameChainOptions, minAmountOut: 2_475_000_000n })
+
+        expect(result.hash).toBe(DUMMY_SWAP_HASH)
       })
 
       test('should enforce the protocol fee cap', async () => {
         const protocol = createProtocol(account, { maxProtocolFeeBps: 10 })
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('maxProtocolFeeBps')
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(MaximumFeeExceededError)
+        expect(error.message).toContain('maxProtocolFeeBps')
+        expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
       test('should enforce the network fee cap', async () => {
         const protocol = createProtocol(account, { maxNetworkFeeBps: 10 })
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('maxNetworkFeeBps')
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(MaximumFeeExceededError)
+        expect(error.message).toContain('maxNetworkFeeBps')
       })
 
-      test('should fail closed when a network fee cap cannot be verified', async () => {
-        const quote = makeQuote()
-        delete quote.attributes.network_fee.amount.usd_value
-        quotesResponse = { data: [quote] }
-        const protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
+      test('should accept fees within the configured caps', async () => {
+        const protocol = createProtocol(account, { maxNetworkFeeBps: 300n, maxProtocolFeeBps: 100 })
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
+        const result = await protocol.swidge(sameChainOptions)
+
+        expect(result.hash).toBe(DUMMY_SWAP_HASH)
       })
 
-      test('should fail closed when the capped quote has no input USD value', async () => {
-        const quote = makeQuote()
-        delete quote.attributes.input_amount.usd_value
-        quotesResponse = { data: [quote] }
-        const protocol = createProtocol(account, { maxNetworkFeeBps: 1 })
-
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
-      })
-
-      test('should fail closed when a protocol fee cap cannot be verified', async () => {
-        const quote = makeQuote()
-        delete quote.attributes.protocol_fee.amount.usd_value
-        quotesResponse = { data: [quote] }
-        const protocol = createProtocol(account, { maxProtocolFeeBps: 1 })
-
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toMatchObject({ code: 'fee_cap_unverifiable' })
+      test('should apply fee caps passed as execution config', async () => {
+        await expect(protocol.swidge(sameChainOptions, { maxProtocolFeeBps: 10 })).rejects.toThrow(MaximumFeeExceededError)
       })
 
       test.each([
-        ['maxNetworkFeeBps', NaN],
-        ['maxNetworkFeeBps', -1],
-        ['maxProtocolFeeBps', Number.POSITIVE_INFINITY]
-      ])('should reject invalid %s values', async (name, value) => {
-        const protocol = createProtocol(account, { [name]: value })
+        ['maxNetworkFeeBps', 1, (quote) => delete quote.attributes.network_fee.amount.usd_value],
+        ['maxNetworkFeeBps', 1, (quote) => delete quote.attributes.input_amount.usd_value],
+        ['maxNetworkFeeBps', 1, (quote) => delete quote.attributes.network_fee.amount.quantity],
+        ['maxProtocolFeeBps', 1, (quote) => delete quote.attributes.protocol_fee.amount.usd_value]
+      ])('should fail closed when %s cannot be verified', async (name, cap, mutate) => {
+        const quote = makeQuote()
+        mutate(quote)
+        quotesResponse = { data: [quote] }
+        const protocol = createProtocol(account, { [name]: cap })
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toMatchObject({ code: 'invalid_config' })
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(MaximumFeeExceededError)
+        expect(error.message).toContain('cannot be verified')
       })
 
-      test('should reject an approval that authorizes an unexpected spender', async () => {
+      test.each([
+        ['maxNetworkFeeBps', Number.NaN],
+        ['maxNetworkFeeBps', -1],
+        ['maxNetworkFeeBps', -1n],
+        ['maxProtocolFeeBps', Number.POSITIVE_INFINITY],
+        ['maxProtocolFeeBps', '10']
+      ])('should reject the invalid %s value %s', async (name, value) => {
+        const protocol = createProtocol(account, { [name]: value })
+
+        await expect(protocol.swidge(sameChainOptions)).rejects.toThrow(ValueError)
+      })
+
+      test.each([
+        ['authorizes an unexpected spender', (evm) => { evm.data = encodeApprove(DUMMY_USER_ADDRESS, 10n ** 18n) }, 'unexpected spender'],
+        ['is below the quoted amount', (evm) => { evm.data = encodeApprove(DUMMY_ROUTER, 1n) }, 'below the quoted input amount'],
+        ['targets another token', (evm) => { evm.to = DUMMY_TOKEN_OUT.toLowerCase() }, 'expected input token'],
+        ['transfers native value', (evm) => { evm.value = '1' }, 'must not transfer native value'],
+        ['is not an approve call', (evm) => { evm.data = '0xa9059cbb' }, 'valid ERC-20 approve call']
+      ])('should reject an approval that %s', async (_, mutate, message) => {
         const quote = makeQuote({ approve: true })
-        quote.attributes.transaction_approve.evm.data = `0x095ea7b3${USER_ADDRESS.slice(2).toLowerCase().padStart(64, '0')}${(10n ** 18n).toString(16).padStart(64, '0')}`
+        mutate(quote.attributes.transaction_approve.evm)
         quotesResponse = { data: [quote] }
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('unexpected spender')
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error.message).toContain(message)
+        expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
       test('should throw if the account is read-only', async () => {
-        const readOnly = new WalletAccountReadOnlyEvm(USER_ADDRESS, { provider: 'https://mock-rpc-url.com' })
+        const readOnly = new WalletAccountReadOnlyEvm(DUMMY_USER_ADDRESS, { provider: DUMMY_RPC_URL })
 
         const protocol = createProtocol(readOnly)
 
-        await expect(protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n }))
-          .rejects.toThrow('non read-only')
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(AccountRequiredError)
+        expect(error.message).toContain('non read-only')
       })
     })
 
@@ -548,12 +779,7 @@ describe('ZerionProtocol', () => {
       test('should quote a bridge using a numeric destination chain id', async () => {
         quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
 
-        await protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: 'token-out-id',
-          toChain: 8453,
-          fromTokenAmount: 10n ** 18n
-        })
+        await protocol.quoteSwidge({ ...sameChainOptions, toToken: 'token-out-id', toChain: 8453 })
 
         const request = quotesRequests[0]
 
@@ -564,34 +790,49 @@ describe('ZerionProtocol', () => {
       test('should fall back to fungible-id resolution for address-shaped canonical ids', async () => {
         quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
 
-        // TOKEN_OUT has no by-implementation entry on base, but its address
-        // doubles as a fungible id with a base implementation.
-        await protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          toChain: 'base',
-          fromTokenAmount: 10n ** 18n
-        })
+        // DUMMY_TOKEN_OUT has no by-implementation entry on base, but its
+        // address doubles as a fungible id with a base implementation.
+        await protocol.quoteSwidge({ ...sameChainOptions, toChain: 'base' })
 
         expect(quotesRequests[0].searchParams.get('output[fungible_id]')).toBe('token-out-id')
       })
 
+      test('should build a cross-chain swidge id from the source and destination chains', async () => {
+        quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
+
+        const result = await protocol.swidge({ ...sameChainOptions, toToken: 'token-out-id', toChain: 'base' })
+
+        expect(result.id).toBe(`ethereum:base:${DUMMY_SWAP_HASH}`)
+        expect(result.hash).toBe(DUMMY_SWAP_HASH)
+      })
+
+      test('should reject quotes whose chain metadata does not match the request', async () => {
+        quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
+
+        const error = await rejectionOf(protocol.quoteSwidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ZerionApiError)
+        expect(error.message).toContain('mismatched')
+      })
+
       test('should require a recipient for solana destinations', async () => {
-        await expect(protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: 'eth',
-          toChain: 'solana',
-          fromTokenAmount: 10n ** 18n
-        })).rejects.toThrow("The 'recipient' option is required")
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, toToken: 'eth', toChain: 'solana' }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain("The 'recipient' option is required")
       })
 
       test('should reject an unrelated refund address', async () => {
-        await expect(protocol.quoteSwidge({
-          fromToken: TOKEN_IN,
-          toToken: TOKEN_OUT,
-          fromTokenAmount: 10n ** 18n,
-          refundAddress: '0x' + '99'.repeat(20)
-        })).rejects.toThrow('refundAddress')
+        const error = await rejectionOf(protocol.quoteSwidge({ ...sameChainOptions, refundAddress: '0x' + '99'.repeat(20) }))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain('refundAddress')
+      })
+
+      test('should accept a refund address equal to the sender', async () => {
+        const quote = await protocol.quoteSwidge({ ...sameChainOptions, refundAddress: DUMMY_USER_ADDRESS.toLowerCase() })
+
+        expect(quote.toTokenAmount).toBe(2_500_000_000n)
       })
     })
 
@@ -599,18 +840,34 @@ describe('ZerionProtocol', () => {
       test('should report completed for a successful same-chain swap', async () => {
         getTransactionReceiptMock.mockResolvedValue({ status: 1 })
 
-        const result = await protocol.getSwidgeStatus(`ethereum:ethereum:${SWAP_HASH}`)
+        const result = await protocol.getSwidgeStatus(DUMMY_SWAP_HASH)
 
         expect(result).toEqual({
           status: 'completed',
-          transactions: [{ hash: SWAP_HASH, chain: 'ethereum', type: 'source' }]
+          transactions: [{ hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'source' }]
         })
+      })
+
+      test('should report completed for an explicit same-chain id', async () => {
+        getTransactionReceiptMock.mockResolvedValue({ status: 1 })
+
+        const result = await protocol.getSwidgeStatus(`ethereum:ethereum:${DUMMY_SWAP_HASH}`)
+
+        expect(result.status).toBe('completed')
       })
 
       test('should report pending for a successful cross-chain source transaction', async () => {
         getTransactionReceiptMock.mockResolvedValue({ status: 1 })
 
-        const result = await protocol.getSwidgeStatus(`ethereum:base:${SWAP_HASH}`)
+        const result = await protocol.getSwidgeStatus(`ethereum:base:${DUMMY_SWAP_HASH}`)
+
+        expect(result.status).toBe('pending')
+      })
+
+      test('should honour chain hints for plain-hash ids', async () => {
+        getTransactionReceiptMock.mockResolvedValue({ status: 1 })
+
+        const result = await protocol.getSwidgeStatus(DUMMY_SWAP_HASH, { fromChain: 1, toChain: 'base' })
 
         expect(result.status).toBe('pending')
       })
@@ -618,7 +875,7 @@ describe('ZerionProtocol', () => {
       test('should report failed when the source transaction reverted', async () => {
         getTransactionReceiptMock.mockResolvedValue({ status: 0 })
 
-        const result = await protocol.getSwidgeStatus(SWAP_HASH)
+        const result = await protocol.getSwidgeStatus(DUMMY_SWAP_HASH)
 
         expect(result.status).toBe('failed')
       })
@@ -626,99 +883,152 @@ describe('ZerionProtocol', () => {
       test('should report pending when the source transaction is not yet mined', async () => {
         getTransactionReceiptMock.mockResolvedValue(null)
 
-        const result = await protocol.getSwidgeStatus(SWAP_HASH)
+        const result = await protocol.getSwidgeStatus(DUMMY_SWAP_HASH)
 
         expect(result.status).toBe('pending')
+        expect(getTransactionMock).toHaveBeenCalledWith(DUMMY_SWAP_HASH)
       })
 
-      test('should throw on malformed ids', async () => {
-        await expect(protocol.getSwidgeStatus('not-a-hash')).rejects.toThrow('Invalid swidge id')
+      test('should throw when no transaction exists for the id', async () => {
+        getTransactionReceiptMock.mockResolvedValue(null)
+        getTransactionMock.mockResolvedValue(null)
+
+        await expect(protocol.getSwidgeStatus(DUMMY_SWAP_HASH)).rejects.toThrow(NoSuchElementError)
+      })
+
+      test.each(['', 'not-a-hash', `ethereum:base:${DUMMY_SWAP_HASH}:extra`])('should reject the malformed id %s', async (id) => {
+        await expect(protocol.getSwidgeStatus(id)).rejects.toThrow(ValueError)
+      })
+
+      test('should throw when the account is not on the source chain', async () => {
+        const error = await rejectionOf(protocol.getSwidgeStatus(`base:ethereum:${DUMMY_SWAP_HASH}`))
+
+        expect(error).toBeInstanceOf(ValueError)
+        expect(error.message).toContain("source chain ('base')")
       })
     })
 
     describe('swap and bridge delegation', () => {
       test('should support the swap interface', async () => {
-        const result = await protocol.swap({
-          tokenIn: TOKEN_IN,
-          tokenOut: TOKEN_OUT,
-          tokenInAmount: 10n ** 18n
+        const result = await protocol.swap({ tokenIn: DUMMY_TOKEN_IN, tokenOut: DUMMY_TOKEN_OUT, tokenInAmount: 10n ** 18n })
+
+        expect(result).toEqual({
+          hash: DUMMY_SWAP_HASH,
+          fee: 12_345n + 20_000_000n,
+          tokenInAmount: 10n ** 18n,
+          tokenOutAmount: 2_500_000_000n
         })
-
-        expect(result.tokenInAmount).toBe(10n ** 18n)
-        expect(result.tokenOutAmount).toBe(2_500_000_000n)
-        expect(result.hash).toBe(SWAP_HASH)
-        expect(result.fee).toBe(12_345n)
-        expect(account.sendTransaction).toHaveBeenCalled()
+        expect(account.sendTransaction).toHaveBeenCalledWith(DUMMY_SWAP_TRANSACTION)
       })
 
-      test('should use classic vocabulary for exact-out rejections', async () => {
-        await expect(protocol.swap({ tokenIn: TOKEN_IN, tokenOut: TOKEN_OUT, tokenOutAmount: 1_000_000n }))
-          .rejects.toThrow('Specify tokenInAmount instead of tokenOutAmount')
+      test('should reject exact-out swaps', async () => {
+        await expect(protocol.swap({ tokenIn: DUMMY_TOKEN_IN, tokenOut: DUMMY_TOKEN_OUT, tokenOutAmount: 1_000_000n }))
+          .rejects.toThrow(ValueError)
       })
 
-      test('should forward minAmountOut through the classic swap interface', async () => {
-        await expect(protocol.swap({
-          tokenIn: TOKEN_IN,
-          tokenOut: TOKEN_OUT,
+      test('should forward minAmountOut through the swap interface', async () => {
+        const error = await rejectionOf(protocol.swap({
+          tokenIn: DUMMY_TOKEN_IN,
+          tokenOut: DUMMY_TOKEN_OUT,
           tokenInAmount: 10n ** 18n,
           minAmountOut: 3_000_000_000n
-        })).rejects.toThrow('minAmountOut')
+        }))
 
+        expect(error).toBeInstanceOf(SwapError)
+        expect(error.reason).toBe(SwidgeErrorReason.COULD_NOT_MET_THRESHOLD)
+        expect(error.cause).toBeInstanceOf(ZerionQuoteError)
         expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
-      test('should expose only the network fee through the classic quote interface', async () => {
-        const result = await protocol.quoteSwap({
-          tokenIn: TOKEN_IN,
-          tokenOut: TOKEN_OUT,
-          tokenInAmount: 10n ** 18n
-        })
+      test('should report the total fee through the swap quote interface', async () => {
+        const result = await protocol.quoteSwap({ tokenIn: DUMMY_TOKEN_IN, tokenOut: DUMMY_TOKEN_OUT, tokenInAmount: 10n ** 18n })
 
-        expect(result.fee).toBe(10n ** 15n)
+        expect(result).toEqual({
+          fee: 10n ** 15n + 20_000_000n,
+          tokenInAmount: 10n ** 18n,
+          tokenOutAmount: 2_500_000_000n
+        })
       })
 
-      test('should expose bridge-provider fees separately from protocol fees', async () => {
+      test('should split bridge quotes into network and protocol fees', async () => {
         quotesResponse = { data: [makeQuote({ bridgeFee: true, outputChain: 'base' })] }
 
         const result = await protocol.quoteBridge({
-          token: TOKEN_OUT,
+          token: DUMMY_TOKEN_OUT,
           targetChain: 'base',
-          recipient: USER_ADDRESS,
+          recipient: DUMMY_USER_ADDRESS,
           amount: 10n ** 6n
         })
 
-        expect(result.fee).toBe(10n ** 15n)
-        expect(result.bridgeFee).toBe(2n * 10n ** 15n)
+        expect(result).toEqual({ fee: 10n ** 15n, bridgeFee: 20_000_000n + 2n * 10n ** 15n })
       })
 
       test('should bridge by canonical fungible id when chain addresses differ', async () => {
         quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
 
         await protocol.quoteBridge({
-          token: BRIDGE_TOKEN_SOURCE,
+          token: DUMMY_BRIDGE_TOKEN_SOURCE,
           targetChain: 'base',
-          recipient: USER_ADDRESS,
+          recipient: DUMMY_USER_ADDRESS,
           amount: 10n ** 18n
         })
 
         expect(quotesRequests[0].searchParams.get('input[fungible_id]')).toBe('asset-uuid')
         expect(quotesRequests[0].searchParams.get('output[fungible_id]')).toBe('asset-uuid')
+        expect(quotesRequests[0].searchParams.get('output[chain_id]')).toBe('base')
+      })
+
+      test('should execute a bridge through the legacy interface', async () => {
+        quotesResponse = { data: [makeQuote({ outputChain: 'base' })] }
+
+        const result = await protocol.bridge({
+          token: DUMMY_BRIDGE_TOKEN_SOURCE,
+          targetChain: 'base',
+          recipient: DUMMY_USER_ADDRESS,
+          amount: 10n ** 18n
+        })
+
+        expect(result).toEqual({ hash: `ethereum:base:${DUMMY_SWAP_HASH}`, fee: 12_345n, bridgeFee: 20_000_000n })
+        expect(account.sendTransaction).toHaveBeenCalledWith(DUMMY_SWAP_TRANSACTION)
+      })
+
+      test('should wrap swidge errors as bridge errors', async () => {
+        quotesResponse = { data: [] }
+
+        const error = await rejectionOf(protocol.bridge({ token: DUMMY_BRIDGE_TOKEN_SOURCE, targetChain: 'base', amount: 10n ** 18n }))
+
+        expect(error).toBeInstanceOf(BridgeError)
+        expect(error.reason).toBe(SwidgeErrorReason.ROUTE_NOT_SUPPORTED)
+        expect(error.cause).toBeInstanceOf(ZerionQuoteError)
+      })
+    })
+
+    describe('getSupportedTokens', () => {
+      test('should default to the account chain when no filter is given', async () => {
+        const tokens = await protocol.getSupportedTokens()
+
+        expect(tokens.map(token => token.chain)).toEqual(['ethereum', 'ethereum'])
+
+        const url = new URL(fetchMock.mock.calls.find(([u]) => new URL(u).pathname === '/v1/fungibles/')[0])
+
+        expect(url.searchParams.get('filter[implementation_chain_id]')).toBe('ethereum')
       })
     })
   })
 
   describe('with WalletAccountEvmErc4337', () => {
     beforeEach(() => {
-      account = new WalletAccountEvmErc4337(SEED, "0'/0/0", {
+      account = new WalletAccountEvmErc4337(DUMMY_SEED, "0'/0/0", {
         chainId: 1,
-        provider: 'https://mock-rpc-url.com',
+        provider: DUMMY_RPC_URL,
         safeModulesVersion: '0.3.0'
       })
 
-      account.getAddress = jest.fn().mockResolvedValue(USER_ADDRESS)
+      account.getAddress = jest.fn().mockResolvedValue(DUMMY_USER_ADDRESS)
       account.getTransactionReceipt = getTransactionReceiptMock
+      account.getTransaction = getTransactionMock
       account.quoteSendTransaction = jest.fn().mockResolvedValue({ fee: 10n ** 15n })
-      account.sendTransaction = jest.fn().mockResolvedValue({ hash: SWAP_HASH, fee: 12_345n })
+      account.sendTransaction = jest.fn().mockResolvedValue({ hash: DUMMY_SWAP_HASH, fee: 12_345n })
 
       protocol = createProtocol(account)
     })
@@ -726,39 +1036,49 @@ describe('ZerionProtocol', () => {
     test('should bundle the approval with the swap', async () => {
       quotesResponse = { data: [makeQuote({ approve: true })] }
 
-      const result = await protocol.swidge({
-        fromToken: TOKEN_IN,
-        toToken: TOKEN_OUT,
-        fromTokenAmount: 10n ** 18n
-      }, { paymasterToken: 'USDT' })
+      const result = await protocol.swidge(sameChainOptions, { paymasterToken: 'USDT' })
 
-      expect(account.sendTransaction).toHaveBeenCalledWith([
-        { to: TOKEN_IN.toLowerCase(), value: 0n, data: APPROVE_DATA },
-        { to: ROUTER, value: 1_000n, data: '0x1234' }
-      ], { paymasterToken: 'USDT' })
+      expect(account.quoteSendTransaction).toHaveBeenCalledWith([DUMMY_APPROVE_TRANSACTION, DUMMY_SWAP_TRANSACTION], { paymasterToken: 'USDT' })
+      expect(account.sendTransaction).toHaveBeenCalledTimes(1)
+      expect(account.sendTransaction).toHaveBeenCalledWith([DUMMY_APPROVE_TRANSACTION, DUMMY_SWAP_TRANSACTION], { paymasterToken: 'USDT' })
+      expect(getTransactionReceiptMock).not.toHaveBeenCalled()
 
-      expect(result.hash).toBe(SWAP_HASH)
+      expect(result.id).toBe(DUMMY_SWAP_HASH)
+      expect(result.hash).toBe(DUMMY_SWAP_HASH)
+      expect(result.transactions).toEqual([
+        { hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'approval' },
+        { hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'source' }
+      ])
+      expect(result.fees).toEqual([{ ...DUMMY_NETWORK_FEE, amount: 12_345n }, DUMMY_PROTOCOL_FEE])
     })
 
     test('should send a single transaction when no approval is needed', async () => {
-      await protocol.swidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 10n ** 18n })
+      const result = await protocol.swidge(sameChainOptions)
 
-      expect(account.sendTransaction).toHaveBeenCalledWith([
-        { to: ROUTER, value: 1_000n, data: '0x1234' }
-      ], {})
+      expect(account.sendTransaction).toHaveBeenCalledWith([DUMMY_SWAP_TRANSACTION], {})
+      expect(result.transactions).toEqual([{ hash: DUMMY_SWAP_HASH, chain: 'ethereum', type: 'source' }])
+    })
+
+    test('should quote the bundled user operation as a whole', async () => {
+      quotesResponse = { data: [makeQuote({ approve: true })] }
+
+      const quote = await protocol.quoteSwidge(sameChainOptions)
+
+      expect(account.quoteSendTransaction).toHaveBeenCalledWith([DUMMY_APPROVE_TRANSACTION, DUMMY_SWAP_TRANSACTION], undefined)
+      expect(quote.fees[0]).toEqual(DUMMY_NETWORK_FEE)
     })
 
     test('should resolve status through the erc-4337 account', async () => {
       getTransactionReceiptMock.mockResolvedValue({ status: 1 })
 
-      const result = await protocol.getSwidgeStatus(`ethereum:ethereum:${SWAP_HASH}`)
+      const result = await protocol.getSwidgeStatus(`ethereum:ethereum:${DUMMY_SWAP_HASH}`)
 
-      expect(account.getTransactionReceipt).toHaveBeenCalledWith(SWAP_HASH)
+      expect(account.getTransactionReceipt).toHaveBeenCalledWith(DUMMY_SWAP_HASH)
       expect(result.status).toBe('completed')
     })
   })
 
-  describe('discovery', () => {
+  describe('without an account', () => {
     beforeEach(() => {
       protocol = createProtocol(undefined)
     })
@@ -773,12 +1093,48 @@ describe('ZerionProtocol', () => {
       ])
     })
 
+    test('should resolve native tokens through the api for chains without a known symbol', async () => {
+      chainsResponse = { data: [...DUMMY_CHAINS, DUMMY_UNMAPPED_CHAIN] }
+
+      const chains = await protocol.getSupportedChains()
+
+      expect(chains[3]).toEqual({ id: 'dummychain', name: 'Dummy Chain', type: 'evm', nativeToken: 'DMY' })
+
+      const lookups = fetchMock.mock.calls
+        .map(([u]) => new URL(u))
+        .filter(u => u.pathname === '/v1/fungibles/by-implementation')
+        .map(u => u.searchParams.get('implementation'))
+
+      expect(lookups).toEqual(['dummychain'])
+    })
+
+    test('should fail when a native asset cannot be resolved', async () => {
+      chainsResponse = { data: [...DUMMY_CHAINS, DUMMY_GHOST_CHAIN] }
+
+      const error = await rejectionOf(protocol.getSupportedChains())
+
+      expect(error).toBeInstanceOf(ProviderError)
+      expect(error.reason).toBe('NATIVE_ASSET_UNRESOLVED')
+      expect(error.cause).toBeInstanceOf(InvalidTokenError)
+    })
+
+    test('should propagate api failures while resolving native assets', async () => {
+      chainsResponse = { data: [...DUMMY_CHAINS, DUMMY_UNMAPPED_CHAIN] }
+
+      jest.spyOn(protocol._client, 'getFungibleByImplementation').mockRejectedValue(new ZerionApiError('api_error', 'Try again', 503))
+
+      const error = await rejectionOf(protocol.getSupportedChains())
+
+      expect(error).toBeInstanceOf(ZerionApiError)
+      expect(error.status).toBe(503)
+    })
+
     test('should list top tokens on a single chain by market cap', async () => {
       const tokens = await protocol.getSupportedTokens({ fromChain: 'ethereum' })
 
       expect(tokens).toEqual([
         { token: 'eth', chain: 'ethereum', symbol: 'ETH', decimals: 18, name: 'Ethereum' },
-        { token: 'token-out-id', chain: 'ethereum', symbol: 'TOUT', decimals: 6, address: TOKEN_OUT.toLowerCase(), name: 'Token Out' }
+        { token: 'token-out-id', chain: 'ethereum', symbol: 'TOUT', decimals: 6, address: DUMMY_TOKEN_OUT.toLowerCase(), name: 'Token Out' }
       ])
 
       const url = new URL(fetchMock.mock.calls.find(([u]) => new URL(u).pathname === '/v1/fungibles/')[0])
@@ -787,14 +1143,29 @@ describe('ZerionProtocol', () => {
       expect(url.searchParams.get('sort')).toBe('-market_data.market_cap')
     })
 
+    test('should default to ethereum when neither a chain filter nor an account is available', async () => {
+      const tokens = await protocol.getSupportedTokens()
+
+      expect(tokens.map(token => token.chain)).toEqual(['ethereum', 'ethereum'])
+    })
+
+    test('should list tokens on the destination chain only', async () => {
+      const tokens = await protocol.getSupportedTokens({ toChain: 8453 })
+
+      expect(tokens).toEqual([
+        { token: 'eth', chain: 'base', symbol: 'ETH', decimals: 18, name: 'Ethereum' },
+        { token: 'token-out-id', chain: 'base', symbol: 'TOUT', decimals: 6, address: DUMMY_TOKEN_OUT_BASE_ADDRESS, name: 'Token Out' }
+      ])
+    })
+
     test('should list route tokens for a cross-chain pair', async () => {
       const tokens = await protocol.getSupportedTokens({ fromChain: 'ethereum', toChain: 'base' })
 
       expect(tokens).toEqual([
         { token: 'eth', chain: 'ethereum', symbol: 'ETH', decimals: 18, name: 'Ethereum' },
-        { token: 'token-out-id', chain: 'ethereum', symbol: 'TOUT', decimals: 6, address: TOKEN_OUT.toLowerCase(), name: 'Token Out' },
+        { token: 'token-out-id', chain: 'ethereum', symbol: 'TOUT', decimals: 6, address: DUMMY_TOKEN_OUT.toLowerCase(), name: 'Token Out' },
         { token: 'eth', chain: 'base', symbol: 'ETH', decimals: 18, name: 'Ethereum' },
-        { token: 'token-out-id', chain: 'base', symbol: 'TOUT', decimals: 6, address: '0x' + '11'.repeat(20), name: 'Token Out' }
+        { token: 'token-out-id', chain: 'base', symbol: 'TOUT', decimals: 6, address: DUMMY_TOKEN_OUT_BASE_ADDRESS, name: 'Token Out' }
       ])
 
       const routeCalls = fetchMock.mock.calls
@@ -809,9 +1180,26 @@ describe('ZerionProtocol', () => {
       }
     })
 
+    test('should reject unknown chain filters', async () => {
+      await expect(protocol.getSupportedTokens({ fromChain: 'unknownchain' })).rejects.toThrow(ValueError)
+    })
+
+    test('should propagate api failures while listing chains', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ errors: [{ title: 'unauthenticated', detail: 'Invalid api key' }] }, 401))
+
+      await expect(protocol.getSupportedChains()).rejects.toThrow(ZerionApiError)
+    })
+
     test('should throw when quoting without an account', async () => {
-      await expect(protocol.quoteSwidge({ fromToken: TOKEN_IN, toToken: TOKEN_OUT, fromTokenAmount: 1n }))
-        .rejects.toThrow('wallet account')
+      await expect(protocol.quoteSwidge(sameChainOptions)).rejects.toThrow(ReadOnlyAccountRequiredError)
+    })
+
+    test('should throw when executing without an account', async () => {
+      await expect(protocol.swidge(sameChainOptions)).rejects.toThrow(AccountRequiredError)
+    })
+
+    test('should require a provider to track swidge status', async () => {
+      await expect(protocol.getSwidgeStatus(DUMMY_SWAP_HASH)).rejects.toThrow(ProviderRequiredError)
     })
   })
 })

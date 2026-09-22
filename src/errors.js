@@ -14,64 +14,111 @@
 
 'use strict'
 
-export class ZerionError extends Error {
+import { ProviderError, SwidgeError, SwidgeErrorReason } from '@tetherto/wdk-wallet/protocols'
+
+/**
+ * @typedef {Object} ZerionApiErrorDetails
+ * @property {string} [url] - The request url that failed.
+ * @property {*} [body] - The parsed error body returned by the Zerion API, when available.
+ * @property {unknown} [cause] - The underlying error, when available.
+ */
+
+/**
+ * @typedef {Object} ZerionQuoteErrorDetails
+ * @property {string} [reason] - The swidge error reason. Defaults to `ROUTE_NOT_SUPPORTED`.
+ * @property {string} [code] - The machine-readable error code reported by the Zerion API.
+ * @property {string} [hint] - The suggested user action reported by the Zerion API.
+ * @property {unknown} [cause] - The underlying error, when available.
+ */
+
+/**
+ * Error raised when the Zerion API cannot be reached, rejects a request, or returns a
+ * malformed payload. It extends the WDK `ProviderError` so wallet applications can handle
+ * it together with other provider failures.
+ */
+export class ZerionApiError extends ProviderError {
   /**
-   * @param {string} code - Machine-readable error code.
+   * Creates a new Zerion API error.
+   *
+   * @param {string} code - Machine-readable error code: the API error title, `network_error`, or `invalid_response`.
    * @param {string} message - Human-readable error message.
-   * @param {*} [details] - Additional error context.
+   * @param {number} status - The HTTP status code returned by the Zerion API, or 0 when no response was received.
+   * @param {ZerionApiErrorDetails} [details] - Additional request context.
    */
-  constructor (code, message, details) {
-    super(message)
-    this.name = 'ZerionError'
+  constructor (code, message, status, details = {}) {
+    super(message, { reason: code, cause: details.cause })
+
+    this.name = 'ZerionApiError'
+
+    /**
+     * Machine-readable error code.
+     *
+     * @type {string}
+     */
     this.code = code
+
+    /**
+     * The HTTP status code returned by the Zerion API, or 0 when no response was received.
+     *
+     * @type {number}
+     */
+    this.status = status
+
+    /**
+     * Additional request context.
+     *
+     * @type {ZerionApiErrorDetails}
+     */
     this.details = details
   }
 }
 
-export class ZerionApiError extends ZerionError {
+/**
+ * Error raised when Zerion returns no executable route for the requested pair, or when the
+ * best route cannot satisfy the requested constraints. It extends the WDK `SwidgeError`
+ * and always carries a standard swidge error reason.
+ */
+export class ZerionQuoteError extends SwidgeError {
   /**
-   * @param {string} code - Machine-readable error code.
+   * Creates a new Zerion quote error.
+   *
    * @param {string} message - Human-readable error message.
-   * @param {number} status - The HTTP status code returned by the Zerion API.
-   * @param {*} [details] - Additional error context.
+   * @param {ZerionQuoteErrorDetails} [details] - The swidge error reason and the Zerion API error context.
    */
-  constructor (code, message, status, details) {
-    super(code, message, details)
-    this.name = 'ZerionApiError'
-    this.status = status
-  }
-}
+  constructor (message, details = {}) {
+    super(message, { reason: details.reason ?? SwidgeErrorReason.ROUTE_NOT_SUPPORTED, cause: details.cause })
 
-export class ZerionQuoteError extends ZerionError {
-  /**
-   * @param {string} message - Human-readable error message.
-   * @param {*} [details] - Additional error context.
-   */
-  constructor (message, details) {
-    super('no_executable_quote', message, details)
     this.name = 'ZerionQuoteError'
+
+    /**
+     * The machine-readable error code reported by the Zerion API, when available.
+     *
+     * @type {string | undefined}
+     */
+    this.code = details.code
+
+    /**
+     * The suggested user action reported by the Zerion API, when available.
+     *
+     * @type {string | undefined}
+     */
+    this.hint = details.hint
   }
 }
 
-export class ZerionCapabilityError extends ZerionError {
-  /**
-   * @param {string} message - Human-readable error message.
-   * @param {*} [details] - Additional error context.
-   */
-  constructor (message, details) {
-    super('unsupported_operation', message, details)
-    this.name = 'ZerionCapabilityError'
-  }
-}
-
-export class ZerionAllowanceError extends ZerionError {
-  /**
-   * @param {string} message - Human-readable error message.
-   * @param {{ token: string, transaction: { to: string, value: bigint, data: string } }} details - The
-   *   token requiring approval and the ready-to-send approve transaction returned by the Zerion API.
-   */
-  constructor (message, details) {
-    super('allowance_required', message, details)
-    this.name = 'ZerionAllowanceError'
+/**
+ * Maps a Zerion API quote error code to the closest WDK swidge error reason.
+ *
+ * @param {string | undefined} code - The machine-readable error code reported by the Zerion API.
+ * @returns {string} The swidge error reason.
+ */
+export function toSwidgeErrorReason (code) {
+  switch (code) {
+    case 'not_enough_input_asset_balance':
+      return SwidgeErrorReason.INSUFFICIENT_TOKEN_BALANCE
+    case 'not_enough_base_asset_balance':
+      return SwidgeErrorReason.INSUFFICIENT_BALANCE
+    default:
+      return SwidgeErrorReason.ROUTE_NOT_SUPPORTED
   }
 }

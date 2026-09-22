@@ -33,7 +33,7 @@ import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline/promises'
 
 import { WalletAccountEvm, WalletAccountReadOnlyEvm } from '@tetherto/wdk-wallet-evm'
-import ZerionProtocol, { ZerionApiClient, ZerionAllowanceError } from '../index.js'
+import ZerionProtocol, { ZerionApiClient } from '../index.js'
 import { toBaseUnits, fromBaseUnits } from '../src/amounts.js'
 
 const RPC_DEFAULTS = {
@@ -290,42 +290,25 @@ if (command === 'quote') {
     if (answer.trim() !== 'swap') fail('Aborted — nothing was sent.')
   }
 
-  try {
-    const result = await zerion.swidge(options)
+  const result = await zerion.swidge(options)
 
-    console.log(`\n✓ Sent. hash: ${result.hash}`)
-    console.log(`  swidge id: ${result.id}`)
-    console.log('\n  Tracking status (ctrl-c to stop)...')
+  console.log(`\n✓ Sent. hash: ${result.hash}`)
+  console.log(`  swidge id: ${result.id}`)
 
-    for (let i = 0; i < 24; i++) {
-      await new Promise(resolve => setTimeout(resolve, 5000))
+  const approval = result.transactions.find(tx => tx.type === 'approval')
 
-      const { status } = await zerion.getSwidgeStatus(result.id)
+  if (approval) console.log(`  approval hash: ${approval.hash}`)
 
-      console.log(`    ${new Date().toISOString()}  ${status}`)
+  console.log('\n  Tracking status (ctrl-c to stop)...')
 
-      if (status === 'completed' || status === 'failed') break
-    }
-  } catch (err) {
-    if (err instanceof ZerionAllowanceError) {
-      console.log(`\n! Approval needed first: token ${err.details.token}`)
+  for (let i = 0; i < 24; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5000))
 
-      if (!flags.yes) {
-        const readline = createInterface({ input: process.stdin, output: process.stdout })
-        const answer = await readline.question("  Send the approve transaction now? Type 'approve' to proceed: ")
+    const { status } = await zerion.getSwidgeStatus(result.id)
 
-        readline.close()
+    console.log(`    ${new Date().toISOString()}  ${status}`)
 
-        if (answer.trim() !== 'approve') fail('Aborted — nothing was sent.')
-      }
-
-      const { hash } = await account.sendTransaction(err.details.transaction)
-
-      console.log(`  ✓ Approve sent: ${hash}`)
-      console.log('  Wait for it to confirm, then re-run the same execute command.')
-    } else {
-      throw err
-    }
+    if (status === 'completed' || status === 'failed') break
   }
 } else if (command === 'status') {
   const id = positionals[1]

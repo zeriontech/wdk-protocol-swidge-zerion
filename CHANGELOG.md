@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Errors follow the WDK taxonomy (`@tetherto/wdk-wallet` 1.0.0-beta.19): `ZerionApiError` extends `ProviderError`, `ZerionQuoteError` extends `SwidgeError` and carries a standard `reason`; invalid options throw `ValueError`, unknown tokens `InvalidTokenError`, fee-cap violations `MaximumFeeExceededError`. `ZerionError`, `ZerionCapabilityError` and `ZerionAllowanceError` were removed.
+- Standard (EOA) accounts: `swidge()` sends a required approval itself and waits for it to confirm before sending the swap, instead of throwing `ZerionAllowanceError`. New `approvalPollIntervalMs` / `approvalTimeoutMs` configuration.
+- Same-chain swidge ids are the transaction hash; cross-chain ids keep the `fromChain:toChain:hash` form. `getSwidgeStatus` throws `NoSuchElementError` when no transaction exists for the id.
+- The legacy `swap` / `quoteSwap` / `bridge` / `quoteBridge` methods are inherited from `SwidgeProtocol` instead of being overridden.
+- `getSupportedChains` resolves native token symbols through the API for chains without a built-in symbol.
+- Added the `ZerionProtocol` named export and the `ISwidgeProtocol` re-export; WDK wallet modules are pinned under `dependencies`.
+
 ## 0.1.0
 
 Initial release.
