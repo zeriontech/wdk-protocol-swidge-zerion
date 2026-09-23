@@ -33,17 +33,22 @@ import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline/promises'
 
 import { WalletAccountEvm, WalletAccountReadOnlyEvm } from '@tetherto/wdk-wallet-evm'
+import { ProviderError } from '@tetherto/wdk-wallet/protocols'
+
 import ZerionProtocol, { ZerionApiClient } from '../index.js'
 import { toBaseUnits, fromBaseUnits } from '../src/amounts.js'
 
+// Official public endpoints: some free rpcs (e.g. publicnode without a token)
+// reject receipt lookups for hashes they do not know yet, which breaks status
+// tracking right after a broadcast. Override with --rpc.
 const RPC_DEFAULTS = {
-  ethereum: 'https://ethereum-rpc.publicnode.com',
-  base: 'https://base-rpc.publicnode.com',
-  arbitrum: 'https://arbitrum-one-rpc.publicnode.com',
-  optimism: 'https://optimism-rpc.publicnode.com',
-  polygon: 'https://polygon-bor-rpc.publicnode.com',
-  'binance-smart-chain': 'https://bsc-rpc.publicnode.com',
-  avalanche: 'https://avalanche-c-chain-rpc.publicnode.com'
+  ethereum: 'https://cloudflare-eth.com',
+  base: 'https://mainnet.base.org',
+  arbitrum: 'https://arb1.arbitrum.io/rpc',
+  optimism: 'https://mainnet.optimism.io',
+  polygon: 'https://polygon-rpc.com',
+  'binance-smart-chain': 'https://bsc-dataseed.binance.org',
+  avalanche: 'https://api.avax.network/ext/bc/C/rpc'
 }
 
 // Convenience symbols -> canonical Zerion fungible ids (chain-agnostic:
@@ -304,7 +309,16 @@ if (command === 'quote') {
   for (let i = 0; i < 24; i++) {
     await new Promise(resolve => setTimeout(resolve, 5000))
 
-    const { status } = await zerion.getSwidgeStatus(result.id)
+    let status
+
+    try {
+      status = (await zerion.getSwidgeStatus(result.id)).status
+    } catch (err) {
+      if (!(err instanceof ProviderError) || err.reason !== 'RECEIPT_LOOKUP_FAILED') throw err
+
+      console.log(`    ${new Date().toISOString()}  receipt lookup failed (${err.cause?.message ?? err.message}), retrying`)
+      continue
+    }
 
     console.log(`    ${new Date().toISOString()}  ${status}`)
 
