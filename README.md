@@ -234,7 +234,7 @@ Quotes and results carry an itemised `fees` array. Each Zerion fee block maps to
 
 | Zerion field | `SwidgeFee.type` | `SwidgeFee.token` | `included` | Legacy `swap`/`quoteSwap` | Legacy `bridge`/`quoteBridge` |
 |--------------|------------------|-------------------|------------|---------------------------|-------------------------------|
-| Wallet estimate (`account.quoteSendTransaction`) and, after execution, the fee actually paid | `network` | Source-chain native token | `false` | summed into `fee` | `fee` |
+| Wallet estimate (`account.quoteSendTransaction`); after execution, the wallet's fee quote for each transaction sent | `network` | Source-chain native token | `false` | summed into `fee` | `fee` |
 | `protocol_fee` (Zerion) | `protocol` | The fee's `fungible` | `included_in_rate` | summed into `fee` | `bridgeFee` |
 | `bridge_fee` (routed bridge provider) | `protocol` | The fee's `fungible` | `included_in_rate` | summed into `fee` | `bridgeFee` |
 | — | `affiliate`, `other` | | | not emitted | not emitted |
@@ -246,7 +246,7 @@ Fee amounts are in base units of `SwidgeFee.token`. Zero fees reported by the AP
 When the input token is not yet approved, the approval transaction returned by the API is executed as part of `swidge()`:
 
 - **ERC-4337 accounts**: the approval is bundled atomically with the swap in a single user operation.
-- **Standard accounts**: the approval is sent first and awaited (`approvalPollIntervalMs` / `approvalTimeoutMs`), then the swap is sent. Both transactions are listed in the result's `transactions` array (`type: 'approval'` and `type: 'source'`), and the reported network fee is the total actually paid.
+- **Standard accounts**: the approval is sent first and awaited (`approvalPollIntervalMs` / `approvalTimeoutMs`), then the swap is sent. Both transactions are listed in the result's `transactions` array (`type: 'approval'` and `type: 'source'`), and the reported network fee is the sum of the wallet's fee quotes for the transactions that were sent (WDK's `sendTransaction` reports its pre-broadcast estimate).
 - API-provided swap and approval transactions are checked for the expected sender, source chain, token, spender, and amount before they are quoted or signed.
 
 ### Errors
@@ -260,7 +260,7 @@ The module throws the standard WDK error types exported by `@tetherto/wdk-wallet
 | `ReadOnlyAccountRequiredError` / `AccountRequiredError` | `WdkError` | Quoting without an account / executing with a read-only account |
 | `ProviderRequiredError` | `WdkError` | The account is not connected to a provider |
 | `ZerionApiError` | `ProviderError` | The Zerion API cannot be reached, rejects the request, or returns an invalid payload (`code`, `status`, `details`) |
-| `ProviderError` | `WdkError` | The account's provider cannot report its network, wallet estimation fails, or a standard-account approval reverted or timed out (`reason`) |
+| `ProviderError` | `WdkError` | The account's provider cannot report its network, a receipt or transaction lookup fails, wallet estimation or broadcasting fails, or a standard-account approval reverted or timed out (`reason`) |
 | `ZerionQuoteError` | `SwidgeError` | No executable route, or the quoted minimum output is below `minAmountOut` (`reason`, `code`, `hint`) |
 | `MaximumFeeExceededError` | `WdkError` | A configured fee cap is exceeded, or cannot be verified from the quote |
 | `NoSuchElementError` | `WdkError` | `getSwidgeStatus` finds no transaction for the id |
