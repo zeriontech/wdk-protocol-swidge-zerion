@@ -617,13 +617,21 @@ export default class ZerionProtocol extends SwidgeProtocol {
     const deadline = Date.now() + timeout
     const account = /** @type {*} */ (this._account)
 
+    let lastLookupError
+
     while (true) {
       let receipt
 
       try {
         receipt = await account.getTransactionReceipt(hash)
+        lastLookupError = undefined
       } catch (err) {
-        throw toProviderError(err, `The receipt of the approval transaction ('${hash}') could not be fetched`, 'RECEIPT_LOOKUP_FAILED')
+        // Typed wallet errors are not transient; raw rpc failures can be (some
+        // public rpcs reject lookups of hashes they do not know yet), so keep
+        // polling until the deadline.
+        if (isWdkError(err)) throw err
+
+        lastLookupError = err
       }
 
       if (receipt) {
@@ -635,7 +643,11 @@ export default class ZerionProtocol extends SwidgeProtocol {
       }
 
       if (Date.now() >= deadline) {
-        throw new ProviderError(`The approval transaction ('${hash}') was not confirmed within ${timeout}ms.`, { reason: 'APPROVAL_TIMEOUT' })
+        const detail = lastLookupError
+          ? `; the last receipt lookup failed: ${lastLookupError?.message ?? lastLookupError}`
+          : ''
+
+        throw new ProviderError(`The approval transaction ('${hash}') was not confirmed within ${timeout}ms${detail}.`, { reason: 'APPROVAL_TIMEOUT', cause: lastLookupError })
       }
 
       await sleep(interval)

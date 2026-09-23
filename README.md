@@ -228,6 +228,8 @@ Parameters:
 
 Unknown or malformed ids throw `ValueError`; an id whose transaction does not exist throws `NoSuchElementError`.
 
+Status lookups need an RPC that answers `eth_getTransactionReceipt` for any hash. Some free public endpoints (for example publicnode without a personal token) reject lookups of hashes they do not know yet as "archive requests"; `getSwidgeStatus` reports that as `ProviderError` (`reason: 'RECEIPT_LOOKUP_FAILED'`), while approval polling inside `swidge()` keeps retrying such failures until `approvalTimeoutMs`.
+
 #### Fee mapping
 
 Quotes and results carry an itemised `fees` array. Each Zerion fee block maps to a WDK `SwidgeFee` type, and the legacy `swap` / `bridge` methods aggregate them as follows:
