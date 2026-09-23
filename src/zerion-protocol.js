@@ -188,6 +188,22 @@ function isErc4337Account (account) {
   return typeof account?.getUserOperationReceipt === 'function'
 }
 
+// Wallet modules may ship their own copy of @tetherto/wdk-wallet, so the typed
+// errors they throw are recognised by their base-class name, not by instanceof.
+function isWdkError (err) {
+  for (let proto = Object.getPrototypeOf(err ?? {}); proto; proto = Object.getPrototypeOf(proto)) {
+    if (proto.constructor?.name === 'WdkError') return true
+  }
+
+  return false
+}
+
+function toProviderError (err, message, reason) {
+  if (isWdkError(err)) return err
+
+  return new ProviderError(`${message}: ${err?.message ?? err}.`, { reason, cause: err })
+}
+
 async function mapWithConcurrency (items, limit, fn) {
   const results = new Array(items.length)
   let next = 0
@@ -339,9 +355,17 @@ export default class ZerionProtocol extends SwidgeProtocol {
       else networkFeePaid += BigInt(fee)
     }
 
+    const send = async (...args) => {
+      try {
+        return await account.sendTransaction(...args)
+      } catch (err) {
+        throw toProviderError(err, 'The wallet failed to send the transaction', 'SEND_FAILED')
+      }
+    }
+
     if (isErc4337Account(account)) {
       const calls = approveTx ? [approveTx, swapTx] : [swapTx]
-      const sent = await account.sendTransaction(calls, config)
+      const sent = await send(calls, config)
 
       hash = sent.hash
       recordFee(sent.fee)
@@ -349,7 +373,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
       if (approveTx) transactions.push({ hash, chain, type: 'approval' })
     } else {
       if (approveTx) {
-        const approval = await account.sendTransaction(approveTx)
+        const approval = await send(approveTx)
 
         transactions.push({ hash: approval.hash, chain, type: 'approval' })
         recordFee(approval.fee)
@@ -357,7 +381,7 @@ export default class ZerionProtocol extends SwidgeProtocol {
         await this._waitForTransaction(approval.hash, mergedConfig)
       }
 
-      const sent = await account.sendTransaction(swapTx)
+      const sent = await send(swapTx)
 
       hash = sent.hash
       recordFee(sent.fee)
@@ -441,11 +465,33 @@ export default class ZerionProtocol extends SwidgeProtocol {
 
     // Erc-4337 accounts translate their user-operation hash to the eventual
     // transaction hash here; standard accounts perform a normal receipt lookup.
-    const receipt = /** @type {{ status?: number } | null | undefined} */ (await account.getTransactionReceipt(hash))
+    /** @type {{ status?: number } | null | undefined} */
+    let receipt
+
+    try {
+      receipt = await account.getTransactionReceipt(hash)
+    } catch (err) {
+      throw toProviderError(err, `The receipt of transaction ('${hash}') could not be fetched`, 'RECEIPT_LOOKUP_FAILED')
+    }
 
     if (!receipt) {
-      if (typeof account.getTransaction === 'function' && !(await account.getTransaction(hash))) {
-        throw new NoSuchElementError(`No swidge found for id ('${id}').`)
+      if (typeof account.getTransaction === 'function') {
+        let transaction
+
+        try {
+          transaction = await account.getTransaction(hash)
+        } catch (err) {
+          // Wallet accounts report unknown hashes with their own NoSuchElementError.
+          if (err?.name === 'NoSuchElementError') {
+            throw new NoSuchElementError(`No swidge found for id ('${id}').`, { cause: err })
+          }
+
+          throw toProviderError(err, `The transaction ('${hash}') could not be fetched`, 'RECEIPT_LOOKUP_FAILED')
+        }
+
+        if (!transaction) {
+          throw new NoSuchElementError(`No swidge found for id ('${id}').`)
+        }
       }
 
       return { status: 'pending', transactions }
@@ -572,7 +618,13 @@ export default class ZerionProtocol extends SwidgeProtocol {
     const account = /** @type {*} */ (this._account)
 
     while (true) {
-      const receipt = await account.getTransactionReceipt(hash)
+      let receipt
+
+      try {
+        receipt = await account.getTransactionReceipt(hash)
+      } catch (err) {
+        throw toProviderError(err, `The receipt of the approval transaction ('${hash}') could not be fetched`, 'RECEIPT_LOOKUP_FAILED')
+      }
 
       if (receipt) {
         if (receipt.status === 0) {

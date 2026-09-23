@@ -45,6 +45,29 @@ const DUMMY_APPROVE_DATA = encodeApprove(DUMMY_ROUTER, 10n ** 18n)
 // Production shape of a waived protocol fee: no denomination, no fiat value.
 const DUMMY_ZERO_PROTOCOL_FEE = { amount: { quantity: '0' }, base_percentage: 0.2, percentage: 0, included_in_rate: false }
 
+// Wallet modules can ship their own copy of @tetherto/wdk-wallet. These classes
+// mimic typed errors thrown by such a copy: same names, different identity.
+class WdkError extends Error {
+  constructor (message) {
+    super(message)
+    this.name = 'WdkError'
+  }
+}
+
+class DummyNestedNoSuchElementError extends WdkError {
+  constructor (message) {
+    super(message)
+    this.name = 'NoSuchElementError'
+  }
+}
+
+class DummyNestedProviderRequiredError extends WdkError {
+  constructor (message) {
+    super(message)
+    this.name = 'ProviderRequiredError'
+  }
+}
+
 const DUMMY_QUOTE_ERROR = { code: 'not_enough_input_asset_balance', hint: 'topup', message: 'Not enough balance' }
 
 const DUMMY_CHAINS = [
@@ -763,6 +786,35 @@ describe('ZerionProtocol', () => {
         expect(account.sendTransaction).not.toHaveBeenCalled()
       })
 
+      test('should wrap wallet broadcast failures as provider errors', async () => {
+        account.sendTransaction.mockRejectedValue(new Error('nonce too low'))
+
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('SEND_FAILED')
+        expect(error.message).toContain('nonce too low')
+      })
+
+      test('should pass through typed wallet errors when broadcasting', async () => {
+        const nested = new DummyNestedProviderRequiredError('The wallet must be connected to a provider.')
+        account.sendTransaction.mockRejectedValue(nested)
+
+        await expect(protocol.swidge(sameChainOptions)).rejects.toBe(nested)
+      })
+
+      test('should wrap approval receipt polling failures as provider errors', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction.mockResolvedValue({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+        getTransactionReceiptMock.mockRejectedValue(new Error('rpc down'))
+
+        const error = await rejectionOf(protocol.swidge(sameChainOptions))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('RECEIPT_LOOKUP_FAILED')
+        expect(account.sendTransaction).toHaveBeenCalledTimes(1)
+      })
+
       test('should throw if the account is read-only', async () => {
         const readOnly = new WalletAccountReadOnlyEvm(DUMMY_USER_ADDRESS, { provider: DUMMY_RPC_URL })
 
@@ -894,6 +946,44 @@ describe('ZerionProtocol', () => {
         getTransactionMock.mockResolvedValue(null)
 
         await expect(protocol.getSwidgeStatus(DUMMY_SWAP_HASH)).rejects.toThrow(NoSuchElementError)
+      })
+
+      test('should normalise the wallet not-found error', async () => {
+        getTransactionReceiptMock.mockResolvedValue(null)
+        getTransactionMock.mockRejectedValue(new DummyNestedNoSuchElementError(`No transaction found for '${DUMMY_SWAP_HASH}'.`))
+
+        const error = await rejectionOf(protocol.getSwidgeStatus(DUMMY_SWAP_HASH))
+
+        expect(error).toBeInstanceOf(NoSuchElementError)
+        expect(error.message).toContain('No swidge found')
+        expect(error.cause).toBeInstanceOf(DummyNestedNoSuchElementError)
+      })
+
+      test('should wrap receipt lookup failures as provider errors', async () => {
+        getTransactionReceiptMock.mockRejectedValue(new Error('server response 403 Forbidden'))
+
+        const error = await rejectionOf(protocol.getSwidgeStatus(DUMMY_SWAP_HASH))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('RECEIPT_LOOKUP_FAILED')
+        expect(error.message).toContain('403 Forbidden')
+      })
+
+      test('should wrap transaction lookup failures as provider errors', async () => {
+        getTransactionReceiptMock.mockResolvedValue(null)
+        getTransactionMock.mockRejectedValue(new Error('rpc down'))
+
+        const error = await rejectionOf(protocol.getSwidgeStatus(DUMMY_SWAP_HASH))
+
+        expect(error).toBeInstanceOf(ProviderError)
+        expect(error.reason).toBe('RECEIPT_LOOKUP_FAILED')
+      })
+
+      test('should pass through typed wallet errors from a duplicated wdk-wallet copy', async () => {
+        const nested = new DummyNestedProviderRequiredError('The wallet must be connected to a provider.')
+        getTransactionReceiptMock.mockRejectedValue(nested)
+
+        await expect(protocol.getSwidgeStatus(DUMMY_SWAP_HASH)).rejects.toBe(nested)
       })
 
       test.each(['', 'not-a-hash', `ethereum:base:${DUMMY_SWAP_HASH}:extra`])('should reject the malformed id %s', async (id) => {
