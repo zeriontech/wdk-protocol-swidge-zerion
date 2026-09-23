@@ -803,16 +803,46 @@ describe('ZerionProtocol', () => {
         await expect(protocol.swidge(sameChainOptions)).rejects.toBe(nested)
       })
 
-      test('should wrap approval receipt polling failures as provider errors', async () => {
+      test('should keep polling the approval receipt through transient lookup failures', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction
+          .mockResolvedValueOnce({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+          .mockResolvedValueOnce({ hash: DUMMY_SWAP_HASH, fee: 12_345n })
+        getTransactionReceiptMock
+          .mockRejectedValueOnce(new Error('Archive requests require a personal token'))
+          .mockResolvedValueOnce({ status: 1 })
+        protocol = createProtocol(account, { approvalPollIntervalMs: 1 })
+
+        const result = await protocol.swidge(sameChainOptions)
+
+        expect(result.hash).toBe(DUMMY_SWAP_HASH)
+        expect(getTransactionReceiptMock).toHaveBeenCalledTimes(2)
+        expect(account.sendTransaction).toHaveBeenCalledTimes(2)
+      })
+
+      test('should time out with the last lookup failure when the approval receipt never loads', async () => {
         quotesResponse = { data: [makeQuote({ approve: true })] }
         account.sendTransaction.mockResolvedValue({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
         getTransactionReceiptMock.mockRejectedValue(new Error('rpc down'))
+        protocol = createProtocol(account, { approvalPollIntervalMs: 1, approvalTimeoutMs: 20 })
 
         const error = await rejectionOf(protocol.swidge(sameChainOptions))
 
         expect(error).toBeInstanceOf(ProviderError)
-        expect(error.reason).toBe('RECEIPT_LOOKUP_FAILED')
+        expect(error.reason).toBe('APPROVAL_TIMEOUT')
+        expect(error.message).toContain('rpc down')
+        expect(error.cause.message).toBe('rpc down')
         expect(account.sendTransaction).toHaveBeenCalledTimes(1)
+      })
+
+      test('should abort approval polling on typed wallet errors', async () => {
+        quotesResponse = { data: [makeQuote({ approve: true })] }
+        account.sendTransaction.mockResolvedValue({ hash: DUMMY_APPROVE_HASH, fee: 1_000n })
+        const nested = new DummyNestedProviderRequiredError('The wallet must be connected to a provider.')
+        getTransactionReceiptMock.mockRejectedValue(nested)
+
+        await expect(protocol.swidge(sameChainOptions)).rejects.toBe(nested)
+        expect(getTransactionReceiptMock).toHaveBeenCalledTimes(1)
       })
 
       test('should throw if the account is read-only', async () => {
