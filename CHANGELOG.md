@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Waived protocol fees, which the API reports without a denomination or fiat value, no longer reject quotes or fail fee-cap checks.
+- Receipt and transaction lookups, approval polling and broadcasting surface provider failures as `ProviderError`; unknown swidge ids throw the module's `NoSuchElementError` even when the wallet packages carry their own copy of `@tetherto/wdk-wallet`.
 
 ## [0.1.0] - 2026-07-21
 
