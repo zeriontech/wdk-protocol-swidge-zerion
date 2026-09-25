@@ -1,6 +1,11 @@
 # wdk-protocol-swidge-zerion
 
-[![Built with WDK](https://raw.githubusercontent.com/tetherto/wdk-docs/refs/heads/main/public/assets/branding/wdk-badge-color-dark.svg)](https://docs.wdk.tether.io)
+<a href="https://docs.wdk.tether.io">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tetherto/wdk-docs/refs/heads/main/public/assets/branding/wdk-badge-color-dark.svg">
+    <img alt="Built with WDK" src="https://raw.githubusercontent.com/tetherto/wdk-docs/refs/heads/main/public/assets/branding/wdk-badge-color-light.svg" width="140" height="32">
+  </picture>
+</a>
 
 **Note**: This package is currently in beta. Please test thoroughly in development environments before using in production.
 
@@ -9,7 +14,7 @@ A WDK Swidge protocol module that lets EVM wallet accounts swap and bridge token
 | | |
 |---|---|
 | WDK interface | `SwidgeProtocol` / `ISwidgeProtocol` from `@tetherto/wdk-wallet/protocols` (also exposes the legacy `SwapProtocol` and `BridgeProtocol` methods) |
-| WDK version | `@tetherto/wdk-wallet` `1.0.0-beta.19`, `@tetherto/wdk-wallet-evm` `1.0.0-beta.19`, `@tetherto/wdk-wallet-evm-erc-4337` `1.0.0-beta.20` |
+| WDK version | `@tetherto/wdk-wallet` `1.0.0-beta.20`, `@tetherto/wdk-wallet-evm` `1.0.0-beta.19`, `@tetherto/wdk-wallet-evm-erc-4337` `1.0.0-beta.20` |
 | Runtimes | Node.js ≥ 20, Bare (`bare.js` entry) |
 | Provider | [Zerion API](https://developers.zerion.io) — `GET /v1/swap/quotes/`, `/v1/chains/`, `/v1/fungibles/`, `/v1/swap/fungibles/` |
 | Maintainer | [Zerion](https://zerion.io) — security reports: see [SECURITY.md](SECURITY.md) |

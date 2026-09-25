@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Errors follow the WDK taxonomy (`@tetherto/wdk-wallet` 1.0.0-beta.19): `ZerionApiError` extends `ProviderError`, `ZerionQuoteError` extends `SwidgeError` and carries a standard `reason`; invalid options throw `ValueError`, unknown tokens `InvalidTokenError`, fee-cap violations `MaximumFeeExceededError`.
+- Built against `@tetherto/wdk-wallet` 1.0.0-beta.20; the README badge follows the reader's colour scheme.
+- Errors follow the WDK taxonomy: `ZerionApiError` extends `ProviderError`, `ZerionQuoteError` extends `SwidgeError` and carries a standard `reason`; invalid options throw `ValueError`, unknown tokens `InvalidTokenError`, fee-cap violations `MaximumFeeExceededError`.
 - Standard (EOA) accounts: `swidge()` sends a required approval itself and waits for it to confirm before sending the swap, instead of throwing `ZerionAllowanceError`.
 - Same-chain swidge ids are the transaction hash; cross-chain ids keep the `fromChain:toChain:hash` form. `getSwidgeStatus` throws `NoSuchElementError` when no transaction exists for the id.
 - The legacy `swap` / `quoteSwap` / `bridge` / `quoteBridge` methods are inherited from `SwidgeProtocol` instead of being overridden.
@@ -30,6 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Waived protocol fees, which the API reports without a denomination or fiat value, no longer reject quotes or fail fee-cap checks.
 - Receipt and transaction lookups, approval polling and broadcasting surface provider failures as `ProviderError`; unknown swidge ids throw the module's `NoSuchElementError` even when the wallet packages carry their own copy of `@tetherto/wdk-wallet`.
+
+### Security
+
+- Refreshed the development dependency tree (`npm audit fix`) so a fresh install reports no known vulnerabilities.
 
 ## [0.1.0] - 2026-07-21
 
