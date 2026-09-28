@@ -36,7 +36,7 @@
     "test:coverage": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --coverage"
   },
   "dependencies": {
-    "@tetherto/wdk-wallet": "1.0.0-beta.19",
+    "@tetherto/wdk-wallet": "1.0.0-beta.20",
     "@tetherto/wdk-wallet-evm": "1.0.0-beta.19",
     "@tetherto/wdk-wallet-evm-erc-4337": "1.0.0-beta.20",
     "bare-node-runtime": "^1.1.4"
